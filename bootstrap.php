@@ -64,3 +64,9 @@ if (!defined('PENALTY_RATE_PER_MINUTE')) {
     define('PENALTY_RATE_PER_MINUTE', 0.5);
 }
 
+// Optional: serve a prebuilt owner report PDF instead of generating one.
+// Set to an absolute path on the server (Windows example).
+if (!defined('OWNER_REPORT_STATIC_PDF')) {
+    define('OWNER_REPORT_STATIC_PDF', 'C:\xampp\htdocs\githubCitySlot\Smart-Urban-Parking-System\parking_system_report.pdf');
+}
+

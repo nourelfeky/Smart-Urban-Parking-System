@@ -4,6 +4,9 @@ require_once __DIR__ . '/BaseController.php';
 require_once __DIR__ . '/../Core/Database.php';
 require_once __DIR__ . '/../Core/Auth.php';
 require_once __DIR__ . '/../Models/ParkingBookingValidator.php';
+require_once __DIR__ . '/../Models/OwnerReportModel.php';
+require_once __DIR__ . '/../Models/WaitlistModel.php';
+require_once __DIR__ . '/../Models/ReviewModel.php';
 
 class OwnerController extends BaseController
 {
@@ -14,6 +17,9 @@ class OwnerController extends BaseController
         $u = current_user();
         $uid = $u['id'];
 
+        // Ensures review/trust-score columns exist for older DBs.
+        new ReviewModel($pdo);
+
         $spotCount = $pdo->prepare('SELECT COUNT(*) FROM parking_spots WHERE owner_id=?');
         $spotCount->execute([$uid]);
         $spot_count = $spotCount->fetchColumn();
@@ -22,7 +28,7 @@ class OwnerController extends BaseController
         $rev->execute([$uid]);
         $total_rev = $rev->fetchColumn();
 
-        $ownerStmt = $pdo->prepare('SELECT earnings_balance, verification_status FROM space_owners WHERE owner_id=?');
+        $ownerStmt = $pdo->prepare('SELECT earnings_balance, verification_status, trust_score FROM space_owners WHERE owner_id=?');
         $ownerStmt->execute([$uid]);
         $odata = $ownerStmt->fetch();
 
@@ -37,6 +43,62 @@ class OwnerController extends BaseController
             'recent' => $recent,
             'pageTitle' => 'Owner Dashboard',
         ]);
+    }
+
+    public static function reports(): void
+    {
+        require_role('owner');
+        $pdo = Database::getConnection();
+        $u = current_user();
+        $uid = (int)$u['id'];
+
+        $month = trim((string)($_GET['month'] ?? date('Y-m')));
+        if (!preg_match('/^\d{4}-\d{2}$/', $month)) {
+            $month = date('Y-m');
+        }
+
+        $metrics = (new OwnerReportModel($pdo))->getMonthlyOwnerMetrics($uid, $month);
+        self::render('owner/reports', [
+            'month' => $month,
+            'metrics' => $metrics,
+            'pageTitle' => 'Monthly Reports',
+        ]);
+    }
+
+    public static function reportPdf(): void
+    {
+        require_role('owner');
+        $pdo = Database::getConnection();
+        $u = current_user();
+        $uid = (int)$u['id'];
+
+        $month = trim((string)($_GET['month'] ?? date('Y-m')));
+        if (!preg_match('/^\d{4}-\d{2}$/', $month)) {
+            http_response_code(400);
+            echo 'Invalid month format. Expected YYYY-MM.';
+            return;
+        }
+
+        // If a static PDF exists (requested by user), serve it directly.
+        if (defined('OWNER_REPORT_STATIC_PDF')) {
+            $path = (string)OWNER_REPORT_STATIC_PDF;
+            if ($path !== '' && is_file($path)) {
+                if (function_exists('ob_get_level')) {
+                    while (ob_get_level() > 0) {
+                        @ob_end_clean();
+                    }
+                }
+                if (!headers_sent()) {
+                    header('Content-Type: application/pdf');
+                    header('Content-Disposition: attachment; filename="parking_system_report.pdf"');
+                    header('Content-Length: ' . filesize($path));
+                }
+                readfile($path);
+                return;
+            }
+        }
+
+        (new OwnerReportModel($pdo))->downloadMonthlyPdf($uid, $month, (string)($u['name'] ?? 'Owner'));
     }
 
     public static function spots(): void
@@ -76,6 +138,9 @@ class OwnerController extends BaseController
                     flash('err', 'Cannot change status — there is an active booking on this spot.');
                 } else {
                     $pdo->prepare('UPDATE parking_spots SET status=? WHERE spot_id=? AND owner_id=?')->execute([$status, $sid, $uid]);
+                    if ($status === 'available') {
+                        (new WaitlistModel($pdo))->notifySpotAvailable($sid);
+                    }
                     flash('ok', 'Spot status updated.');
                 }
             } elseif ($act === 'delete') {

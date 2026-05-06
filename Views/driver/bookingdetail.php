@@ -5,6 +5,15 @@
     <span class="badge <?= $bc ?>" style="font-size:14px;padding:6px 14px"><?= $r['status'] ?></span>
 </div>
 
+<?php if (($r['penalty_amount'] ?? 0) > 0): ?>
+    <div class="card" style="border-left:4px solid var(--red)">
+        <div style="font-weight:700;color:var(--red)">Overstay penalty applied</div>
+        <div class="text-muted mt-1">
+            You checked out after your reserved end time, so an overstay penalty was added to your total.
+        </div>
+    </div>
+<?php endif; ?>
+
 <div class="card">
     <div class="card-title">Spot Details</div>
     <p><strong><?= htmlspecialchars($r['address']) ?></strong></p>
@@ -44,7 +53,7 @@
                 <?php endif; ?>
             </td>
         </tr>
-        <?php if ($r['penalty_amount'] > 0): ?>
+        <?php if (($r['penalty_amount'] ?? 0) > 0): ?>
         <tr><td class="text-muted">Reserved Time</td><td style="padding-left:24px"><?= date('d M Y, H:i', strtotime($r['end_time'])) ?></td></tr>
         <tr><td class="text-muted">Actual Time</td><td style="padding-left:24px"><?= $r['check_out_time'] ? date('d M Y, H:i', strtotime($r['check_out_time'])) : '-' ?></td></tr>
         <tr><td class="text-muted">Overstay Duration</td><td style="padding-left:24px"><?= (int)$r['overstay_minutes'] ?> minutes</td></tr>
@@ -53,6 +62,40 @@
         <?php endif; ?>
     </table>
 </div>
+
+<?php if ($r['status'] === 'completed'): ?>
+<div class="card">
+    <div class="card-title">Rate the Space Owner</div>
+    <?php if (!empty($reviewed_owner)): ?>
+        <p class="text-muted">You already rated this owner for this reservation.</p>
+    <?php else: ?>
+        <form method="post" style="max-width:520px">
+            <input type="hidden" name="action" value="rate_owner">
+            <div class="flex gap-2" style="align-items:end;flex-wrap:wrap">
+                <div>
+                    <label class="text-muted" style="display:block;margin-bottom:6px">Rating</label>
+                    <select name="rating" class="form-control" style="width:160px" required>
+                        <option value="">Select…</option>
+                        <option value="5">5 - Excellent</option>
+                        <option value="4">4 - Good</option>
+                        <option value="3">3 - OK</option>
+                        <option value="2">2 - Bad</option>
+                        <option value="1">1 - Very bad</option>
+                    </select>
+                </div>
+                <div style="flex:1;min-width:220px">
+                    <label class="text-muted" style="display:block;margin-bottom:6px">Comment (optional)</label>
+                    <input name="comment" class="form-control" placeholder="Short feedback…" />
+                </div>
+                <div>
+                    <button class="btn btn-primary">Submit</button>
+                </div>
+            </div>
+        </form>
+        <p class="text-muted mt-2">This rating contributes to the owner trust score (weighted by reviewer activity and recency).</p>
+    <?php endif; ?>
+</div>
+<?php endif; ?>
 
 <?php if (in_array($r['status'], ['confirmed','active'])): ?>
 <div class="card">

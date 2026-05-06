@@ -1,6 +1,7 @@
 <?php
-$booking_mode_post = $_POST['booking_mode'] ?? 'one_time';
-$is_subscription_ui = $booking_mode_post === 'subscription';
+$booking_mode = $_POST['booking_mode'] ?? $_GET['booking_mode'] ?? 'one_time';
+$booking_mode = $booking_mode === 'subscription' ? 'subscription' : 'one_time';
+$is_subscription_ui = $booking_mode === 'subscription';
 ?>
 <?php require __DIR__ . '/../layout/header.php'; ?>
 
@@ -63,7 +64,23 @@ $is_subscription_ui = $booking_mode_post === 'subscription';
             </select>
         </div>
 
-        <div id="one-time-panel" class="booking-type-panel" <?= $is_subscription_ui ? 'hidden' : '' ?>>
+        <div class="flex gap-2 mb-3" style="flex-wrap:wrap">
+            <?php
+                $spotIdQ = isset($_GET['spot']) ? (int)$_GET['spot'] : 0;
+                $spotQuery = $spotIdQ ? ('?spot=' . $spotIdQ) : '';
+            ?>
+            <a class="btn btn-outline btn-sm" href="<?= htmlspecialchars(route_url('/driver/book' . $spotQuery . ($spotQuery ? '&' : '?') . 'booking_mode=one_time')) ?>">One-time booking</a>
+            <a class="btn btn-outline btn-sm" href="<?= htmlspecialchars(route_url('/driver/book' . $spotQuery . ($spotQuery ? '&' : '?') . 'booking_mode=subscription')) ?>">Commuter subscription</a>
+            <div class="text-muted" style="align-self:center">If the dropdown doesn’t toggle, use these buttons.</div>
+        </div>
+
+        <noscript>
+            <div class="alert alert-info" style="margin-top:8px">
+                JavaScript is disabled. The commuter subscription panel will show only after you submit the form with “Commuter subscription (recurring)” selected.
+            </div>
+        </noscript>
+
+        <div id="one-time-panel" class="booking-type-panel" style="<?= $is_subscription_ui ? 'display:none' : '' ?>">
             <div class="form-row">
                 <div class="form-group">
                     <label>Start time</label>
@@ -83,7 +100,8 @@ $is_subscription_ui = $booking_mode_post === 'subscription';
             </div>
         </div>
 
-        <div id="subscription-panel" class="booking-type-panel card mb-0 mt-3" style="padding:16px;background:rgba(255,255,255,0.02)" <?= !$is_subscription_ui ? 'hidden' : '' ?>>
+        <div id="subscription-panel" class="booking-type-panel card mb-0 mt-3"
+             style="padding:16px;background:rgba(255,255,255,0.02);<?= !$is_subscription_ui ? 'display:none' : '' ?>">
             <div class="card-title" style="margin-bottom:8px">Commuter subscription</div>
             <p class="text-muted" style="margin-bottom:12px">Pick a date range (end after start, at least 7 days). <strong>Duration (weeks)</strong> is computed as <code>ceil((End − Start) days / 7)</code> automatically.</p>
             <div class="form-row">
@@ -266,20 +284,21 @@ $is_subscription_ui = $booking_mode_post === 'subscription';
 
     function syncPanels() {
         var submode = modeSel.value === 'subscription';
-        otPanel.hidden = submode;
-        subPanel.hidden = !submode;
+        // Avoid relying on the HTML "hidden" attribute so it works consistently.
+        otPanel.style.display = submode ? 'none' : '';
+        subPanel.style.display = submode ? '' : 'none';
 
-        otPanel.querySelectorAll('.one-time-input').forEach(function (inp) {
+        Array.prototype.forEach.call(otPanel.querySelectorAll('.one-time-input'), function (inp) {
             inp.disabled = submode;
             inp.required = !submode;
             if (submode) { inp.value = ''; }
         });
 
-        subPanel.querySelectorAll('.sub-input').forEach(function (inp) {
+        Array.prototype.forEach.call(subPanel.querySelectorAll('.sub-input'), function (inp) {
             inp.disabled = !submode;
             inp.required = submode;
         });
-        subPanel.querySelectorAll('.sub-day').forEach(function (cb) {
+        Array.prototype.forEach.call(subPanel.querySelectorAll('.sub-day'), function (cb) {
             cb.disabled = !submode;
             if (!submode) { cb.checked = false; }
         });

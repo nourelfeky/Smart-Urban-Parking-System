@@ -29,12 +29,20 @@
         <div class="value"><?= number_format($total_rev * 0.85, 0) ?></div>
         <div class="sub">EGP (85%)</div>
     </div>
+    <div class="stat-card">
+        <div class="label">Trust Score</div>
+        <div class="value"><?= number_format((float)($odata['trust_score'] ?? 0), 1) ?></div>
+        <div class="sub">out of 100</div>
+    </div>
 </div>
 
 <div class="card">
     <div class="flex items-center justify-between mb-3">
         <div class="card-title" style="margin-bottom:0">Recent Bookings on My Spots</div>
-        <a href="<?= htmlspecialchars(route_url('/owner/spots')) ?>" class="btn btn-primary btn-sm">Manage Spots</a>
+        <div class="flex gap-2">
+            <a href="<?= htmlspecialchars(route_url('/owner/reports')) ?>" class="btn btn-outline btn-sm">Monthly Reports</a>
+            <a href="<?= htmlspecialchars(route_url('/owner/spots')) ?>" class="btn btn-primary btn-sm">Manage Spots</a>
+        </div>
     </div>
     <?php if (empty($recent)): ?>
         <p class="text-muted">No bookings yet.</p>

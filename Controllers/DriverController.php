@@ -8,6 +8,8 @@ require_once __DIR__ . '/../Models/ParkingBookingValidator.php';
 require_once __DIR__ . '/../Models/PricingModel.php';
 require_once __DIR__ . '/../Models/PaymentModel.php';
 require_once __DIR__ . '/../Models/PenaltyModel.php';
+require_once __DIR__ . '/../Models/WaitlistModel.php';
+require_once __DIR__ . '/../Models/ReviewModel.php';
 
 class DriverController extends BaseController
 {
@@ -99,7 +101,7 @@ class DriverController extends BaseController
             $params[] = (float)$max_w;
         }
 
-        $sql = 'SELECT ps.spot_id, ps.address, ps.base_rate, ps.has_ev_charger, ps.height_cm, ps.width_cm, ps.difficulty_label, pe.default_multiplier, COALESCE(AVG(dr.rating_value), 0) AS avg_rating, COUNT(DISTINCT dr.rating_id) AS rating_count, ps.latitude, ps.longitude FROM parking_spots ps LEFT JOIN pricing_engine pe ON pe.spot_id = ps.spot_id LEFT JOIN difficulty_ratings dr ON dr.spot_id = ps.spot_id LEFT JOIN zones z ON z.zone_id = ps.zone_id WHERE ' . implode(' AND ', $where) . ' GROUP BY ps.spot_id ORDER BY ps.base_rate ASC';
+        $sql = 'SELECT ps.spot_id, ps.zone_id, ps.address, ps.base_rate, ps.has_ev_charger, ps.height_cm, ps.width_cm, ps.difficulty_label, pe.default_multiplier, COALESCE(AVG(dr.rating_value), 0) AS avg_rating, COUNT(DISTINCT dr.rating_id) AS rating_count, ps.latitude, ps.longitude FROM parking_spots ps LEFT JOIN pricing_engine pe ON pe.spot_id = ps.spot_id LEFT JOIN difficulty_ratings dr ON dr.spot_id = ps.spot_id LEFT JOIN zones z ON z.zone_id = ps.zone_id WHERE ' . implode(' AND ', $where) . ' GROUP BY ps.spot_id ORDER BY ps.base_rate ASC';
         $stmt = $pdo->prepare($sql);
         $stmt->execute($params);
         $spots = $stmt->fetchAll();
@@ -111,6 +113,50 @@ class DriverController extends BaseController
             'max_h' => $max_h,
             'max_w' => $max_w,
             'pageTitle' => 'Find Parking',
+        ]);
+    }
+
+    public static function zones(): void
+    {
+        require_role('driver');
+        $pdo = Database::getConnection();
+        $u = current_user();
+        $uid = (int)$u['id'];
+        $wait = new WaitlistModel($pdo);
+
+        if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+            $act = $_POST['action'] ?? '';
+            $zone_id = (int)($_POST['zone_id'] ?? 0);
+            if ($zone_id) {
+                if ($act === 'watch_zone') {
+                    $wait->joinZoneWatch($uid, $zone_id);
+                    flash('ok', 'You are now watching this zone. We will notify you when a spot becomes available.');
+                } elseif ($act === 'unwatch_zone') {
+                    $wait->leaveZoneWatch($uid, $zone_id);
+                    flash('ok', 'Zone watch removed.');
+                }
+            }
+            redirect(route_url('/driver/zones'));
+        }
+
+        $zonesStmt = $pdo->prepare(
+            'SELECT z.zone_id, z.name,
+                    SUM(CASE WHEN ps.status = "available" THEN 1 ELSE 0 END) AS available_spots,
+                    COUNT(ps.spot_id) AS total_spots,
+                    zw.watch_id
+             FROM zones z
+             LEFT JOIN parking_spots ps ON ps.zone_id = z.zone_id
+             LEFT JOIN zone_watchlist zw ON zw.zone_id = z.zone_id AND zw.driver_id = ?
+             WHERE z.status = "active"
+             GROUP BY z.zone_id
+             ORDER BY z.name ASC'
+        );
+        $zonesStmt->execute([$uid]);
+        $zones = $zonesStmt->fetchAll();
+
+        self::render('driver/zones', [
+            'zones' => $zones,
+            'pageTitle' => 'Parking Zones',
         ]);
     }
 
@@ -579,6 +625,11 @@ class DriverController extends BaseController
             redirect(route_url('/driver/bookings'));
         }
 
+        $reviewed_owner = false;
+        if ($r['status'] === 'completed') {
+            $reviewed_owner = (new ReviewModel($pdo))->hasReviewForReservation((int)$r['owner_id'], $uid, $id);
+        }
+
         if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $act = $_POST['action'] ?? '';
             if ($act === 'checkin' && $r['status'] === 'confirmed') {
@@ -592,19 +643,38 @@ class DriverController extends BaseController
             }
             if ($act === 'checkout' && $r['status'] === 'active') {
                 $now = date('Y-m-d H:i:s');
-                $penaltyBreakdown = (new PenaltyModel())->calculateOverstayPenalty($r['end_time'], $now);
-                $overstay = (int)$penaltyBreakdown['overstay_minutes'];
-                $penalty = (float)$penaltyBreakdown['penalty_amount'];
+                $penaltyBreakdown = (new PenaltyModel($pdo))->calculateOverstayPenaltyBreakdown($r['end_time'], $now);
+                $overstay = (int)($penaltyBreakdown['overstay_minutes'] ?? 0);
+                $penalty = (float)($penaltyBreakdown['penalty_amount'] ?? 0.0);
                 $updatedTotal = (float)$r['final_cost'] + $penalty;
                 $pdo->prepare("UPDATE reservations SET status='completed', check_out_time=?, overstay_minutes=?, penalty_amount=?, final_cost=? WHERE reservation_id=?")->execute([$now, $overstay, $penalty, $updatedTotal, $id]);
                 $pdo->prepare("UPDATE parking_spots SET status='available' WHERE spot_id=?")->execute([$r['spot_id']]);
+                (new WaitlistModel($pdo))->notifySpotAvailable((int)$r['spot_id']);
                 $pdo->prepare("UPDATE parking_sessions SET end_time=?, status=?, duration_mins=? WHERE reservation_id=?")->execute([$now, $overstay > 0 ? 'overstay' : 'completed', (int)((strtotime($now) - strtotime($r['check_in_time'])) / 60), $id]);
                 $pdo->prepare("UPDATE payments SET final_amount = final_amount + ? WHERE payment_id=?")->execute([$penalty, $r['payment_id']]);
                 (new PaymentModel($pdo))->releaseFunds($id);
                 $owner_share = round($updatedTotal * 0.85, 2);
                 $pdo->prepare("UPDATE space_owners SET earnings_balance = earnings_balance + ? WHERE owner_id=?")->execute([$owner_share, $r['owner_id']]);
                 $pdo->prepare('INSERT INTO audit_log (event_type, entity_id, actor_id, spot_id, new_state) VALUES (?,?,?,?,?)')->execute(['QR_CHECKOUT', $id, $uid, $r['spot_id'], 'completed']);
-                flash('ok', 'Checked out.' . ($penalty > 0 ? " Overstay penalty: {$penalty} EGP." : ''));
+                flash('ok', 'Checked out.' . ($penalty > 0 ? " Overstay penalty applied: {$penalty} EGP." : ''));
+                redirect(route_url('/driver/bookingdetail?id=' . $id));
+            }
+            if ($act === 'rate_owner' && $r['status'] === 'completed') {
+                $ownerId = (int)$r['owner_id'];
+                $rating = (int)($_POST['rating'] ?? 0);
+                $comment = trim((string)($_POST['comment'] ?? ''));
+                if ($ownerId <= 0 || $rating < 1 || $rating > 5) {
+                    flash('err', 'Please choose a rating from 1 to 5.');
+                    redirect(route_url('/driver/bookingdetail?id=' . $id));
+                }
+                $rm = new ReviewModel($pdo);
+                if ($rm->hasReviewForReservation($ownerId, $uid, $id)) {
+                    flash('err', 'You already rated this owner for this reservation.');
+                    redirect(route_url('/driver/bookingdetail?id=' . $id));
+                }
+                $rm->addOwnerReview($ownerId, $uid, $id, $rating, $comment);
+                $rm->recomputeOwnerTrustScore($ownerId);
+                flash('ok', 'Thanks! Your review was submitted.');
                 redirect(route_url('/driver/bookingdetail?id=' . $id));
             }
             if ($act === 'extend' && $r['status'] === 'active') {
@@ -676,6 +746,7 @@ class DriverController extends BaseController
             'r' => $r,
             'id' => $id,
             'bc' => $bc,
+            'reviewed_owner' => $reviewed_owner,
             'pageTitle' => 'Booking #' . $id,
         ]);
     }

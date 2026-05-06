@@ -22,6 +22,7 @@ if ($role === 'driver') {
         route_url('/owner/dashboard') => 'Dashboard',
         route_url('/owner/spots') => 'My Spots',
         route_url('/owner/earnings') => 'Earnings',
+        route_url('/owner/reports') => 'Reports',
         route_url('/owner/verify') => 'Verification',
     ];
 } elseif ($role === 'admin') {
