@@ -168,10 +168,34 @@ class DriverController extends BaseController
         $bookingManager = new BookingManager($pdo);
         $bookingManager->ensureSubscriptionSchema();
         $u = current_user();
-        $uid = $u['id'];
+        $uid = (int)$u['id'];
         $spot_id = (int)($_GET['spot'] ?? 0);
         if (!$spot_id) {
             redirect(route_url('/driver/search'));
+        }
+
+        if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['waitlist_spot_action'])) {
+            $target = (int)($_POST['waitlist_spot_id'] ?? 0);
+            $act = (string)($_POST['waitlist_spot_action'] ?? '');
+            if ($target > 0 && in_array($act, ['join', 'leave'], true)) {
+                if ($act === 'join') {
+                    $chk = $pdo->prepare('SELECT COUNT(*) FROM waitlist WHERE driver_id=? AND spot_id=?');
+                    $chk->execute([$uid, $target]);
+                    if (!$chk->fetchColumn()) {
+                        $pdo->prepare('INSERT INTO waitlist (spot_id, driver_id) VALUES (?,?)')->execute([$target, $uid]);
+                        flash('ok', "You're on the waitlist for this spot. We'll notify you when it may be free.");
+                    } else {
+                        flash('err', 'You are already on the waitlist for this spot.');
+                    }
+                } else {
+                    $pdo->prepare('DELETE FROM waitlist WHERE driver_id=? AND spot_id=?')->execute([$uid, $target]);
+                    flash('ok', 'Removed from waitlist for this spot.');
+                }
+            }
+            $q = $_GET;
+            $q['spot'] = (string)$target;
+            ksort($q);
+            redirect(route_url('/driver/book?' . http_build_query($q)));
         }
 
         $spotStmt = $pdo->prepare('SELECT ps.*, z.vat_rate, z.status AS zone_status, pe.default_multiplier, bm.buffer_duration_mins FROM parking_spots ps LEFT JOIN zones z ON z.zone_id = ps.zone_id LEFT JOIN pricing_engine pe ON pe.spot_id = ps.spot_id LEFT JOIN buffer_manager bm ON bm.spot_id = ps.spot_id WHERE ps.spot_id = ?');
@@ -181,13 +205,22 @@ class DriverController extends BaseController
             flash('err', 'Spot not available.');
             redirect(route_url('/driver/search'));
         }
+
+        $wlChk = $pdo->prepare('SELECT COUNT(*) FROM waitlist WHERE driver_id=? AND spot_id=?');
+        $wlChk->execute([$uid, $spot_id]);
+        $on_spot_waitlist = (int)$wlChk->fetchColumn() > 0;
+
         $recommendations = [];
         $availabilityError = '';
         if ($spot['status'] !== 'available' || $spot['zone_status'] === 'locked') {
             $availabilityError = $spot['zone_status'] === 'locked'
                 ? 'This zone is currently locked by a municipal event.'
                 : 'This spot is currently unavailable.';
-            $recommendations = $bookingManager->getAlternativeSpots($spot, 3);
+            $recommendations = $bookingManager->getAlternativeSpots($spot, 5);
+            foreach ($recommendations as &$rec) {
+                $rec['fits_requested_window'] = false;
+            }
+            unset($rec);
         }
 
         $dinfoStmt = $pdo->prepare('SELECT can_book FROM drivers WHERE driver_id=?');
@@ -219,12 +252,18 @@ class DriverController extends BaseController
 
         $error = '';
         $preview = null;
-        if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+        if ($_SERVER['REQUEST_METHOD'] === 'POST' && !isset($_POST['waitlist_spot_action'])) {
             $data = self::processBookingForm($_POST, $spot, $vehicles, $uid, $loyalty_discount, $pdo, $bookingManager);
             $error = $data['error'];
             $preview = $data['preview'];
             $recommendations = $data['recommendations'] ?? $recommendations;
         }
+
+        $alt_ctx = [
+            'start' => trim((string)($_POST['start_time'] ?? $_GET['start'] ?? '')),
+            'end' => trim((string)($_POST['end_time'] ?? $_GET['end'] ?? '')),
+            'booking_mode' => ($_POST['booking_mode'] ?? $_GET['booking_mode'] ?? 'one_time') === 'subscription' ? 'subscription' : 'one_time',
+        ];
 
         self::render('driver/book', [
             'spot' => $spot,
@@ -233,8 +272,27 @@ class DriverController extends BaseController
             'err' => $error ?: $availabilityError,
             'preview' => $preview,
             'recommendations' => $recommendations,
+            'on_spot_waitlist' => $on_spot_waitlist,
+            'alt_ctx' => $alt_ctx,
             'pageTitle' => 'Book Spot',
         ]);
+    }
+
+    /**
+     * @param array<string,mixed>|null $vehRow vehicle_profiles row
+     * @return array{height_cm:mixed,width_cm:mixed,is_ev_capable:bool}|null
+     */
+    private static function vehicleProfileForAlternatives(?array $vehRow): ?array
+    {
+        if (!$vehRow) {
+            return null;
+        }
+
+        return [
+            'height_cm' => $vehRow['height_cm'] ?? null,
+            'width_cm' => $vehRow['width_cm'] ?? null,
+            'is_ev_capable' => !empty($vehRow['is_ev_capable']),
+        ];
     }
 
     private static function processBookingForm(array $post, array $spot, array $vehicles, int $uid, int $loyalty_discount, PDO $pdo, BookingManager $bookingManager): array
@@ -254,10 +312,16 @@ class DriverController extends BaseController
         $booking_mode = $post['booking_mode'] ?? 'one_time';
 
         if ($spot['status'] !== 'available' || $spot['zone_status'] === 'locked') {
+            $rec = $bookingManager->getAlternativeSpots($spot, 5);
+            foreach ($rec as &$rr) {
+                $rr['fits_requested_window'] = false;
+            }
+            unset($rr);
+
             return [
                 'error' => 'The selected spot is no longer available.',
                 'preview' => null,
-                'recommendations' => $bookingManager->getAlternativeSpots($spot, 3),
+                'recommendations' => $rec,
             ];
         }
 
@@ -279,7 +343,7 @@ class DriverController extends BaseController
         }
 
         if ($booking_mode === 'subscription') {
-            return self::processSubscriptionBooking($post, $spot, $vehicle_id, $uid, $loyalty_discount, $pdo, $bookingManager, $action, $promo);
+            return self::processSubscriptionBooking($post, $spot, $vehicle_id, $veh, $uid, $loyalty_discount, $pdo, $bookingManager, $action, $promo);
         }
 
         $rangeCheck = ParkingBookingValidator::validateClientDateTimePair($post['start_time'] ?? null, $post['end_time'] ?? null);
@@ -302,9 +366,16 @@ class DriverController extends BaseController
         $bufferMins = $bookingManager->getBufferMinutes($spot);
         if ($bookingManager->hasBufferedConflict((int)$spot['spot_id'], $start, $end, $bufferMins)) {
             return [
-                'error' => 'This booking violates the required buffer window for this spot (no overlap with existing bookings including buffer after their end times).',
+                'error' => 'This time overlaps an existing booking on this spot (including the required buffer). Pick another time, try a nearby spot, or join the waitlist below.',
                 'preview' => null,
-                'recommendations' => $bookingManager->getAlternativeSpots($spot, 3),
+                'recommendations' => $bookingManager->getRankedAlternatives(
+                    $spot,
+                    $start,
+                    $end,
+                    null,
+                    5,
+                    self::vehicleProfileForAlternatives($veh)
+                ),
             ];
         }
 
@@ -343,7 +414,14 @@ class DriverController extends BaseController
                 return [
                     'error' => 'This slot is no longer available for the selected window. Please preview again.',
                     'preview' => null,
-                    'recommendations' => $bookingManager->getAlternativeSpots($spot, 3),
+                    'recommendations' => $bookingManager->getRankedAlternatives(
+                        $spot,
+                        $start,
+                        $end,
+                        null,
+                        5,
+                        self::vehicleProfileForAlternatives($veh)
+                    ),
                 ];
             }
 
@@ -416,6 +494,7 @@ class DriverController extends BaseController
         array $post,
         array $spot,
         int $vehicle_id,
+        ?array $veh,
         int $uid,
         int $loyalty_discount,
         PDO $pdo,
@@ -506,9 +585,16 @@ class DriverController extends BaseController
         foreach ($slots as $slot) {
             if ($bookingManager->hasBufferedConflict((int)$spot['spot_id'], $slot['start'], $slot['end'], $subBuffer)) {
                 return [
-                    'error' => 'One or more recurring slots violate the buffer-time rule.',
+                    'error' => 'One or more recurring slots conflict with existing bookings on this spot (including buffers). Try nearby spots or join the waitlist.',
                     'preview' => null,
-                    'recommendations' => $bookingManager->getAlternativeSpots($spot, 3),
+                    'recommendations' => $bookingManager->getRankedAlternatives(
+                        $spot,
+                        null,
+                        null,
+                        $slots,
+                        5,
+                        self::vehicleProfileForAlternatives($veh)
+                    ),
                 ];
             }
         }
@@ -547,7 +633,14 @@ class DriverController extends BaseController
                     return [
                         'error' => 'A recurring slot conflicted during confirmation. Preview again.',
                         'preview' => null,
-                        'recommendations' => $bookingManager->getAlternativeSpots($spot, 3),
+                        'recommendations' => $bookingManager->getRankedAlternatives(
+                            $spot,
+                            null,
+                            null,
+                            $slots,
+                            5,
+                            self::vehicleProfileForAlternatives($veh)
+                        ),
                     ];
                 }
 
@@ -567,7 +660,7 @@ class DriverController extends BaseController
             }
             $pdo->commit();
             flash('ok', 'Subscription created. Recurring reservations were generated successfully.');
-            redirect(route_url('/driver/bookings?status=confirmed'));
+            redirect(route_url('/driver/bookings?tab=bookings&status=confirmed'));
         } catch (Exception $e) {
             $pdo->rollBack();
             return ['error' => 'Subscription booking failed. Please try again.', 'preview' => null];
@@ -581,7 +674,19 @@ class DriverController extends BaseController
         $bookingManager = new BookingManager($pdo);
         $bookingManager->ensureSubscriptionSchema();
         $u = current_user();
-        $uid = $u['id'];
+        $uid = (int)$u['id'];
+
+        $tab = (($_GET['tab'] ?? '') === 'waitlist') ? 'waitlist' : 'bookings';
+
+        if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'leave_booking_waitlist') {
+            $sid = (int)($_POST['spot_id'] ?? 0);
+            if ($sid > 0) {
+                $pdo->prepare('DELETE FROM waitlist WHERE driver_id=? AND spot_id=?')->execute([$uid, $sid]);
+                flash('ok', 'Removed from waitlist.');
+            }
+            redirect(route_url('/driver/bookings?tab=waitlist'));
+        }
+
         $filter = $_GET['status'] ?? 'all';
         $where = 'r.driver_id = ?';
         $params = [$uid];
@@ -602,10 +707,23 @@ class DriverController extends BaseController
         );
         $subs->execute([$uid]);
         $subscriptions = $subs->fetchAll();
+
+        $waitlistStmt = $pdo->prepare(
+            'SELECT w.waitlist_id, w.joined_at, ps.spot_id, ps.address, ps.base_rate, ps.status AS spot_status, ps.latitude, ps.longitude
+             FROM waitlist w
+             INNER JOIN parking_spots ps ON ps.spot_id = w.spot_id
+             WHERE w.driver_id = ?
+             ORDER BY w.joined_at DESC'
+        );
+        $waitlistStmt->execute([$uid]);
+        $waitlist_entries = $waitlistStmt->fetchAll();
+
         self::render('driver/bookings', [
             'rows' => $rows,
             'subscriptions' => $subscriptions,
+            'waitlist_entries' => $waitlist_entries,
             'filter' => $filter,
+            'tab' => $tab,
             'pageTitle' => 'My Bookings',
         ]);
     }
@@ -635,7 +753,8 @@ class DriverController extends BaseController
             if ($act === 'checkin' && $r['status'] === 'confirmed') {
                 $now = date('Y-m-d H:i:s');
                 $pdo->prepare("UPDATE reservations SET status='active', check_in_time=?, arrival_time=? WHERE reservation_id=?")->execute([$now, $now, $id]);
-                $pdo->prepare("UPDATE parking_spots SET status='occupied' WHERE spot_id=?")->execute([$r['spot_id']]);
+                // Keep spot as "available" in parking_spots so it still appears on Find Parking / map.
+                // Occupancy is tracked by reservations (active/confirmed) + buffer conflict checks on booking.
                 $pdo->prepare('INSERT INTO parking_sessions (reservation_id, driver_id, spot_id, start_time, status) VALUES (?,?,?,?,?)')->execute([$id, $uid, $r['spot_id'], $now, 'active']);
                 $pdo->prepare('INSERT INTO audit_log (event_type, entity_id, actor_id, spot_id, new_state) VALUES (?,?,?,?,?)')->execute(['QR_CHECKIN', $id, $uid, $r['spot_id'], 'active']);
                 flash('ok', 'Checked in successfully.');

@@ -35,6 +35,8 @@ $router->post('/driver/fines', fn () => DriverController::fines());
 
 // Owner
 $router->get('/owner/dashboard', fn () => OwnerController::dashboard());
+$router->get('/owner/reports', fn () => OwnerController::reports());
+$router->get('/owner/report-pdf', fn () => OwnerController::reportPdf());
 $router->get('/owner/spots', fn () => OwnerController::spots());
 $router->post('/owner/spots', fn () => OwnerController::spots());
 $router->get('/owner/earnings', fn () => OwnerController::earnings());

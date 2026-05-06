@@ -2,6 +2,13 @@
 $booking_mode = $_POST['booking_mode'] ?? $_GET['booking_mode'] ?? 'one_time';
 $booking_mode = $booking_mode === 'subscription' ? 'subscription' : 'one_time';
 $is_subscription_ui = $booking_mode === 'subscription';
+$alt_ctx = $alt_ctx ?? ['start' => '', 'end' => '', 'booking_mode' => 'one_time'];
+$on_spot_waitlist = $on_spot_waitlist ?? false;
+$pref_start = $_POST['start_time'] ?? ($alt_ctx['start'] ?? ($_GET['start'] ?? ''));
+$pref_end = $_POST['end_time'] ?? ($alt_ctx['end'] ?? ($_GET['end'] ?? ''));
+$wl_q = $_GET;
+$wl_q['spot'] = (string)(int)$spot['spot_id'];
+$waitlist_action_url = route_url('/driver/book?' . http_build_query($wl_q));
 ?>
 <?php require __DIR__ . '/../layout/header.php'; ?>
 
@@ -25,17 +32,67 @@ $is_subscription_ui = $booking_mode === 'subscription';
 <div class="alert alert-error"><?= $err ?></div>
 <?php endif; ?>
 
+<div class="card mb-3">
+    <div class="card-title">Waitlist for this spot</div>
+    <p class="text-muted" style="margin-top:-6px">If this spot is booked or the time you want isn’t free, join the waitlist. We’ll notify you in-app when it may be available (e.g. after checkout or cancellation).</p>
+    <form method="post" action="<?= htmlspecialchars($waitlist_action_url) ?>" class="flex gap-2 items-center" style="flex-wrap:wrap">
+        <input type="hidden" name="waitlist_spot_id" value="<?= (int)$spot['spot_id'] ?>">
+        <?php if (!$on_spot_waitlist): ?>
+            <input type="hidden" name="waitlist_spot_action" value="join">
+            <button type="submit" class="btn btn-outline btn-sm">Join waitlist for this address</button>
+        <?php else: ?>
+            <input type="hidden" name="waitlist_spot_action" value="leave">
+            <button type="submit" class="btn btn-warning btn-sm">Leave waitlist</button>
+            <span class="badge badge-blue">On waitlist</span>
+        <?php endif; ?>
+    </form>
+</div>
+
 <?php if (!empty($recommendations)): ?>
 <div class="card mb-3">
-    <div class="card-title">Top 3 Nearby Alternatives</div>
-    <p class="text-muted">Assumption: distance uses spot coordinates when available; otherwise deterministic mock coordinates based on spot ID.</p>
-    <ul>
+    <div class="card-title">Nearby alternatives</div>
+    <?php
+        $anyFit = false;
+        foreach ($recommendations as $x) {
+            if (!empty($x['fits_requested_window'])) {
+                $anyFit = true;
+                break;
+            }
+        }
+    ?>
+    <p class="text-muted" style="margin-top:-6px">
+        <?php if ($anyFit): ?>
+            Spots marked <span class="badge badge-green">fits your time</span> are free for the same schedule (and your vehicle size) when applicable. Others are nearby — open the page and pick a time.
+        <?php else: ?>
+            Distance uses map coordinates when saved. These are the nearest listed spots; confirm times on the booking page.
+        <?php endif; ?>
+    </p>
+    <ul style="list-style:none;padding:0;margin:0">
         <?php foreach ($recommendations as $alt): ?>
-            <li style="margin-bottom:8px">
-                <strong><?= htmlspecialchars($alt['address']) ?></strong> -
-                <?= number_format((float)$alt['distance_km'], 2) ?> km -
-                <?= number_format((float)$alt['base_rate'], 2) ?> EGP/hr
-                <a class="btn btn-sm btn-outline" href="<?= htmlspecialchars(route_url('/driver/book?spot=' . $alt['spot_id'])) ?>">Book this</a>
+            <?php
+                $q = ['spot' => (int)$alt['spot_id']];
+                if ($alt_ctx['booking_mode'] === 'subscription') {
+                    $q['booking_mode'] = 'subscription';
+                } elseif (!empty($alt_ctx['start']) && !empty($alt_ctx['end'])) {
+                    $q['start'] = $alt_ctx['start'];
+                    $q['end'] = $alt_ctx['end'];
+                    $q['booking_mode'] = 'one_time';
+                }
+                $bookAltUrl = route_url('/driver/book?' . http_build_query($q));
+            ?>
+            <li style="margin-bottom:12px;padding-bottom:12px;border-bottom:1px solid var(--gray-100)">
+                <div class="flex gap-2 items-center" style="flex-wrap:wrap">
+                    <strong><?= htmlspecialchars($alt['address']) ?></strong>
+                    <?php if (!empty($alt['fits_requested_window'])): ?>
+                        <span class="badge badge-green">fits your time</span>
+                    <?php else: ?>
+                        <span class="badge badge-amber">nearby</span>
+                    <?php endif; ?>
+                </div>
+                <div class="text-muted mt-1" style="font-size:13px">
+                    <?= number_format((float)$alt['distance_km'], 2) ?> km · <?= number_format((float)$alt['base_rate'], 2) ?> EGP/hr
+                </div>
+                <a class="btn btn-sm btn-outline mt-2" href="<?= htmlspecialchars($bookAltUrl) ?>">Book this spot</a>
             </li>
         <?php endforeach; ?>
     </ul>
@@ -84,11 +141,11 @@ $is_subscription_ui = $booking_mode === 'subscription';
             <div class="form-row">
                 <div class="form-group">
                     <label>Start time</label>
-                    <input type="datetime-local" name="start_time" class="form-control one-time-input" value="<?= htmlspecialchars($_POST['start_time'] ?? '') ?>" <?= $is_subscription_ui ? '' : 'required' ?>>
+                    <input type="datetime-local" name="start_time" class="form-control one-time-input" value="<?= htmlspecialchars($pref_start) ?>" <?= $is_subscription_ui ? '' : 'required' ?>>
                 </div>
                 <div class="form-group">
                     <label>End time</label>
-                    <input type="datetime-local" name="end_time" class="form-control one-time-input" value="<?= htmlspecialchars($_POST['end_time'] ?? '') ?>" <?= $is_subscription_ui ? '' : 'required' ?>>
+                    <input type="datetime-local" name="end_time" class="form-control one-time-input" value="<?= htmlspecialchars($pref_end) ?>" <?= $is_subscription_ui ? '' : 'required' ?>>
                 </div>
             </div>
         </div>

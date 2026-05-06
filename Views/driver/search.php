@@ -71,12 +71,22 @@ L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     attribution: '© OpenStreetMap contributors'
 }).addTo(map);
 
+var bounds = [];
 <?php foreach ($spots as $s): ?>
 <?php if (!empty($s['latitude']) && !empty($s['longitude'])): ?>
-L.marker([<?= $s['latitude'] ?>, <?= $s['longitude'] ?>]).addTo(map)
-    .bindPopup('<strong><?= addslashes(htmlspecialchars($s['address'])) ?></strong><br><?= number_format($s['base_rate'] * ($s['default_multiplier'] ?? 1.0), 2) ?> EGP/hr<br><a href="<?= addslashes(htmlspecialchars(route_url('/driver/book?spot=' . $s['spot_id']))) ?>">Book Now</a>');
+(function () {
+  var lat = <?= (float)$s['latitude'] ?>;
+  var lng = <?= (float)$s['longitude'] ?>;
+  bounds.push([lat, lng]);
+  L.marker([lat, lng]).addTo(map)
+    .bindPopup('<strong><?= addslashes(htmlspecialchars($s["address"])) ?></strong><br><?= number_format($s["base_rate"] * ($s["default_multiplier"] ?? 1.0), 2) ?> EGP/hr<br><a href="<?= addslashes(htmlspecialchars(route_url("/driver/book?spot=" . $s["spot_id"]))) ?>">Book Now</a>');
+})();
 <?php endif; ?>
 <?php endforeach; ?>
+
+if (bounds.length > 0) {
+  map.fitBounds(bounds, { padding: [20, 20] });
+}
 </script>
 
 <?php require __DIR__ . '/../layout/footer.php'; ?>

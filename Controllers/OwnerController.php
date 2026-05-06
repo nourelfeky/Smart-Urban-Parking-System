@@ -10,6 +10,46 @@ require_once __DIR__ . '/../Models/ReviewModel.php';
 
 class OwnerController extends BaseController
 {
+    /**
+     * Best-effort address geocoding using OpenStreetMap Nominatim.
+     * Returns [lat, lng] or [null, null] if not found/failed.
+     *
+     * NOTE: This is intentionally lightweight (no composer deps).
+     */
+    private static function geocodeAddress(string $address): array
+    {
+        $address = trim($address);
+        if ($address === '') {
+            return [null, null];
+        }
+
+        $url = 'https://nominatim.openstreetmap.org/search?format=json&limit=1&q=' . rawurlencode($address);
+        $ctx = stream_context_create([
+            'http' => [
+                'method' => 'GET',
+                'timeout' => 4,
+                'header' => "User-Agent: CitySlot/1.0 (demo)\r\nAccept: application/json\r\n",
+            ],
+        ]);
+
+        $raw = @file_get_contents($url, false, $ctx);
+        if (!is_string($raw) || $raw === '') {
+            return [null, null];
+        }
+
+        $json = json_decode($raw, true);
+        if (!is_array($json) || empty($json[0]) || !is_array($json[0])) {
+            return [null, null];
+        }
+
+        $lat = isset($json[0]['lat']) ? (float)$json[0]['lat'] : null;
+        $lon = isset($json[0]['lon']) ? (float)$json[0]['lon'] : null;
+        if (!$lat || !$lon) {
+            return [null, null];
+        }
+        return [$lat, $lon];
+    }
+
     public static function dashboard(): void
     {
         require_role('owner');
@@ -57,10 +97,15 @@ class OwnerController extends BaseController
             $month = date('Y-m');
         }
 
-        $metrics = (new OwnerReportModel($pdo))->getMonthlyOwnerMetrics($uid, $month);
+        $reportModel = new OwnerReportModel($pdo);
+        $metrics = $reportModel->getMonthlyOwnerMetrics($uid, $month);
+        $daily = $reportModel->getDailySessions($uid, $month);
+        $hourly = $reportModel->getHourlySessions($uid, $month);
         self::render('owner/reports', [
             'month' => $month,
             'metrics' => $metrics,
+            'daily' => $daily,
+            'hourly' => $hourly,
             'pageTitle' => 'Monthly Reports',
         ]);
     }
@@ -98,7 +143,8 @@ class OwnerController extends BaseController
             }
         }
 
-        (new OwnerReportModel($pdo))->downloadMonthlyPdf($uid, $month, (string)($u['name'] ?? 'Owner'));
+        // Per user request: downloadable report is a "fake" monthly PDF (demo sample).
+        (new OwnerReportModel($pdo))->downloadMonthlyPdf($uid, $month, (string)($u['name'] ?? 'Owner'), true);
     }
 
     public static function spots(): void
@@ -118,16 +164,37 @@ class OwnerController extends BaseController
                 $ev = isset($_POST['ev']) ? 1 : 0;
                 $avs = $_POST['avail_start'] ?? '08:00';
                 $ave = $_POST['avail_end'] ?? '22:00';
+
+                $latRaw = trim((string)($_POST['latitude'] ?? ''));
+                $lngRaw = trim((string)($_POST['longitude'] ?? ''));
+                $latPost = $latRaw !== '' ? (float)$latRaw : null;
+                $lngPost = $lngRaw !== '' ? (float)$lngRaw : null;
+
+                $pickedOk = $latPost !== null
+                    && $lngPost !== null
+                    && $latPost >= -90 && $latPost <= 90
+                    && $lngPost >= -180 && $lngPost <= 180;
+
                 $availErr = ParkingBookingValidator::validateOwnerDailyWindow($avs, $ave);
                 if ($address && $rate > 0 && $availErr !== null) {
                     flash('err', $availErr);
                 } elseif ($address && $rate > 0) {
-                    $stmt = $pdo->prepare('INSERT INTO parking_spots (owner_id, address, base_rate, height_cm, width_cm, has_ev_charger, availability_start, availability_end) VALUES (?,?,?,?,?,?,?,?)');
-                    $stmt->execute([$uid, $address, $rate, $height ?: null, $width ?: null, $ev, $avs, $ave]);
+                    if ($pickedOk) {
+                        $lat = $latPost;
+                        $lng = $lngPost;
+                    } else {
+                        [$lat, $lng] = self::geocodeAddress($address);
+                    }
+                    $stmt = $pdo->prepare('INSERT INTO parking_spots (owner_id, address, latitude, longitude, base_rate, height_cm, width_cm, has_ev_charger, availability_start, availability_end) VALUES (?,?,?,?,?,?,?,?,?,?)');
+                    $stmt->execute([$uid, $address, $lat, $lng, $rate, $height ?: null, $width ?: null, $ev, $avs, $ave]);
                     $sid = $pdo->lastInsertId();
                     $pdo->prepare('INSERT INTO pricing_engine (spot_id) VALUES (?)')->execute([$sid]);
                     $pdo->prepare('INSERT INTO buffer_manager (spot_id) VALUES (?)')->execute([$sid]);
-                    flash('ok', 'Spot added.');
+                    if ($lat && $lng) {
+                        flash('ok', 'Spot added and pinned on the map.');
+                    } else {
+                        flash('ok', 'Spot added. (Could not auto-pin on map; no GPS found for this address.)');
+                    }
                 }
             } elseif ($act === 'toggle') {
                 $sid = (int)($_POST['spot_id'] ?? 0);

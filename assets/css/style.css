@@ -40,8 +40,18 @@ a:hover { text-decoration: underline; }
     justify-content: space-between;
     position: sticky;
     top: 0;
-    z-index: 100;
+    z-index: 2000; /* stay above Leaflet controls/map */
     box-shadow: var(--shadow);
+}
+
+/* ---------- MAP / LEAFLET ---------- */
+/* Prevent Leaflet controls/tiles from visually overlapping the sticky navbar */
+.leaflet-container,
+.leaflet-pane,
+.leaflet-top,
+.leaflet-bottom,
+.leaflet-control {
+    z-index: 1;
 }
 .navbar-brand {
     font-size: 20px;

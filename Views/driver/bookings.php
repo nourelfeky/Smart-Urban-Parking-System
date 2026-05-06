@@ -1,3 +1,8 @@
+<?php
+$tab = $tab ?? 'bookings';
+$is_waitlist = $tab === 'waitlist';
+$waitlist_entries = $waitlist_entries ?? [];
+?>
 <?php require __DIR__ . '/../layout/header.php'; ?>
 
 <div class="flex items-center justify-between mb-3">
@@ -5,9 +10,70 @@
     <a href="<?= htmlspecialchars(route_url('/driver/search')) ?>" class="btn btn-primary">+ New Booking</a>
 </div>
 
-<div class="flex gap-2 mb-3">
+<div class="flex gap-2 mb-3" style="flex-wrap:wrap">
+    <a href="<?= htmlspecialchars(route_url('/driver/bookings?tab=bookings')) ?>"
+       class="btn btn-sm <?= !$is_waitlist ? 'btn-primary' : 'btn-outline' ?>">Bookings</a>
+    <a href="<?= htmlspecialchars(route_url('/driver/bookings?tab=waitlist')) ?>"
+       class="btn btn-sm <?= $is_waitlist ? 'btn-primary' : 'btn-outline' ?>">
+        Waitlist
+        <?php if (count($waitlist_entries) > 0): ?>
+            <span class="badge badge-gray" style="margin-left:4px"><?= count($waitlist_entries) ?></span>
+        <?php endif; ?>
+    </a>
+</div>
+
+<?php if ($is_waitlist): ?>
+
+<div class="card">
+    <div class="card-title">Your spot waitlists</div>
+    <p class="text-muted" style="margin-top:-6px">When a watched spot frees up after checkout or cancellation, you receive an in-app notification.</p>
+    <?php if (empty($waitlist_entries)): ?>
+        <p class="text-muted">You are not on any waitlists. Join from a spot&apos;s booking page or from favorites.</p>
+        <a href="<?= htmlspecialchars(route_url('/driver/search')) ?>" class="btn btn-outline mt-2">Find parking</a>
+    <?php else: ?>
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>Spot</th>
+                    <th>Rate</th>
+                    <th>Spot status</th>
+                    <th>Joined</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+            <?php
+            $sc = ['available' => 'badge-green', 'occupied' => 'badge-amber', 'reserved' => 'badge-blue', 'maintenance' => 'badge-gray', 'owner_use' => 'badge-gray', 'locked' => 'badge-red'];
+            foreach ($waitlist_entries as $w):
+                $bc = $sc[$w['spot_status']] ?? 'badge-gray';
+            ?>
+            <tr>
+                <td><strong><?= htmlspecialchars($w['address']) ?></strong></td>
+                <td><?= number_format((float)$w['base_rate'], 2) ?> EGP/hr</td>
+                <td><span class="badge <?= $bc ?>"><?= htmlspecialchars($w['spot_status']) ?></span></td>
+                <td class="text-muted"><?= date('d M Y, H:i', strtotime($w['joined_at'])) ?></td>
+                <td class="flex gap-2" style="flex-wrap:wrap">
+                    <a href="<?= htmlspecialchars(route_url('/driver/book?spot=' . (int)$w['spot_id'])) ?>" class="btn btn-outline btn-sm">Try to book</a>
+                    <form method="post" style="display:inline" onsubmit="return confirm('Leave this waitlist?');">
+                        <input type="hidden" name="action" value="leave_booking_waitlist">
+                        <input type="hidden" name="spot_id" value="<?= (int)$w['spot_id'] ?>">
+                        <button type="submit" class="btn btn-warning btn-sm">Leave</button>
+                    </form>
+                </td>
+            </tr>
+            <?php endforeach; ?>
+            </tbody>
+        </table>
+    </div>
+    <?php endif; ?>
+</div>
+
+<?php else: ?>
+
+<div class="flex gap-2 mb-3" style="flex-wrap:wrap">
     <?php foreach (['all','confirmed','active','completed','cancelled'] as $s): ?>
-        <a href="?status=<?= $s ?>" class="btn btn-sm <?= $filter===$s ? 'btn-primary' : 'btn-outline' ?>"><?= ucfirst($s) ?></a>
+        <a href="<?= htmlspecialchars(route_url('/driver/bookings?tab=bookings&status=' . $s)) ?>" class="btn btn-sm <?= $filter===$s ? 'btn-primary' : 'btn-outline' ?>"><?= ucfirst($s) ?></a>
     <?php endforeach; ?>
 </div>
 
@@ -75,5 +141,7 @@
         </div>
     <?php endif; ?>
 </div>
+
+<?php endif; ?>
 
 <?php require __DIR__ . '/../layout/footer.php'; ?>
