@@ -47,3 +47,20 @@ spl_autoload_register(function (string $class): void {
     }
 });
 
+// Pricing and penalty configuration knobs.
+if (!defined('PEAK_MULTIPLIER')) {
+    define('PEAK_MULTIPLIER', 1.25);
+}
+if (!defined('PEAK_HOURS')) {
+    define('PEAK_HOURS', [
+        ['start' => '08:00', 'end' => '10:00'],
+        ['start' => '17:00', 'end' => '20:00'],
+    ]);
+}
+if (!defined('SPECIAL_EVENT_WINDOWS')) {
+    define('SPECIAL_EVENT_WINDOWS', []);
+}
+if (!defined('PENALTY_RATE_PER_MINUTE')) {
+    define('PENALTY_RATE_PER_MINUTE', 0.5);
+}
+

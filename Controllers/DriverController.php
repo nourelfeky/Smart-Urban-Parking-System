@@ -5,6 +5,9 @@ require_once __DIR__ . '/../Core/Database.php';
 require_once __DIR__ . '/../Core/Auth.php';
 require_once __DIR__ . '/../Models/BookingManager.php';
 require_once __DIR__ . '/../Models/ParkingBookingValidator.php';
+require_once __DIR__ . '/../Models/PricingModel.php';
+require_once __DIR__ . '/../Models/PaymentModel.php';
+require_once __DIR__ . '/../Models/PenaltyModel.php';
 
 class DriverController extends BaseController
 {
@@ -14,6 +17,7 @@ class DriverController extends BaseController
         $pdo = Database::getConnection();
         $bookingManager = new BookingManager($pdo);
         $bookingManager->ensureSubscriptionSchema();
+        new PaymentModel($pdo);
         $u = current_user();
         $uid = $u['id'];
 
@@ -114,6 +118,7 @@ class DriverController extends BaseController
     {
         require_role('driver');
         $pdo = Database::getConnection();
+        new PaymentModel($pdo);
         $bookingManager = new BookingManager($pdo);
         $bookingManager->ensureSubscriptionSchema();
         $u = current_user();
@@ -299,15 +304,16 @@ class DriverController extends BaseController
             $buffer_end = date('Y-m-d H:i:s', strtotime($end) + $bufferMins * 60);
             $qr_token = bin2hex(random_bytes(16));
             $transaction_id = 'CC' . time() . rand(1000, 9999);
-            $p = $pdo->prepare('INSERT INTO payments (driver_id, amount, tax_amount, commission_amt, escrow_status, penalty_buffer, final_amount, discount_applied, payment_method, token_ref, transaction_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)');
+            $p = $pdo->prepare('INSERT INTO payments (driver_id, amount, tax_amount, commission_amt, escrow_status, payment_status, penalty_buffer, final_amount, discount_applied, payment_method, token_ref, transaction_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)');
             $p->execute([
-                $uid, $cost['base'], $cost['tax'], round($cost['total'] * 0.15, 2), 'held', round($cost['escrow'] - $cost['total'], 2), $cost['total'], $cost['discount'], 'credit_card', 'CARD-****' . substr($card_number, -4), $transaction_id
+                $uid, $cost['base'], $cost['tax'], round($cost['total'] * 0.15, 2), 'held', 'pending', round($cost['escrow'] - $cost['total'], 2), $cost['total'], $cost['discount'], 'credit_card', 'CARD-****' . substr($card_number, -4), $transaction_id
             ]);
             $pay_id = $pdo->lastInsertId();
 
             $r = $pdo->prepare('INSERT INTO reservations (driver_id, spot_id, vehicle_id, payment_id, start_time, end_time, buffer_end_time, status, qr_code_token, base_cost, tax_amount, discount_amount, final_cost, escrow_amount, promo_code, buffer_applied, grace_period_mins) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
             $r->execute([$uid, $spot['spot_id'], $vehicle_id ?: null, $pay_id, $start, $end, $buffer_end, 'confirmed', $qr_token, $cost['base'], $cost['tax'], $cost['discount'], $cost['total'], $cost['escrow'], $promo ?: null, 1, 5]);
             $res_id = $pdo->lastInsertId();
+            (new PaymentModel($pdo))->lockFunds((int)$res_id, (float)$cost['total']);
 
             if ($promo) {
                 $pdo->prepare('UPDATE promo_codes SET usage_count = usage_count + 1 WHERE code=?')->execute([$promo]);
@@ -329,7 +335,9 @@ class DriverController extends BaseController
     {
         $hours = max(0.5, (strtotime($end) - strtotime($start)) / 3600);
         $mult = $spot['default_multiplier'] ?? 1.0;
-        $base = round($spot['base_rate'] * $mult * $hours, 2);
+        $baseBeforePeak = round($spot['base_rate'] * $mult * $hours, 2);
+        $peakData = (new PricingModel())->calculatePeakPrice((float)$baseBeforePeak, $start);
+        $base = $peakData['final_price'];
         $vat_rate = $spot['vat_rate'] ?? 0.14;
         $discount = 0;
         if ($promo_code) {
@@ -349,7 +357,13 @@ class DriverController extends BaseController
         $tax = round($taxable * $vat_rate, 2);
         $total = $taxable + $tax;
         $escrow = round($total * 1.15, 2);
-        return compact('base', 'discount', 'tax', 'total', 'escrow', 'hours');
+        return array_merge(compact('base', 'discount', 'tax', 'total', 'escrow', 'hours'), [
+            'base_before_peak' => $baseBeforePeak,
+            'peak_adjustment' => $peakData['adjustment_amount'],
+            'peak_multiplier' => $peakData['multiplier'],
+            'peak_applied' => $peakData['is_peak'],
+            'peak_reason' => $peakData['reason'],
+        ]);
     }
 
     private static function processSubscriptionBooking(
@@ -493,15 +507,17 @@ class DriverController extends BaseController
 
                 $cost = self::calculateBookingCost($spot, $pdo, $promo, $loyalty_discount, $slot['start'], $slot['end'], $sub_discount);
                 $transaction_id = 'SUB' . time() . rand(1000, 9999);
-                $p = $pdo->prepare('INSERT INTO payments (driver_id, amount, tax_amount, commission_amt, escrow_status, penalty_buffer, final_amount, discount_applied, payment_method, token_ref, transaction_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)');
+                $p = $pdo->prepare('INSERT INTO payments (driver_id, amount, tax_amount, commission_amt, escrow_status, payment_status, penalty_buffer, final_amount, discount_applied, payment_method, token_ref, transaction_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)');
                 $p->execute([
-                    $uid, $cost['base'], $cost['tax'], round($cost['total'] * 0.15, 2), 'held', round($cost['escrow'] - $cost['total'], 2), $cost['total'], $cost['discount'], 'subscription', 'SUBSCRIPTION', $transaction_id
+                    $uid, $cost['base'], $cost['tax'], round($cost['total'] * 0.15, 2), 'held', 'pending', round($cost['escrow'] - $cost['total'], 2), $cost['total'], $cost['discount'], 'subscription', 'SUBSCRIPTION', $transaction_id
                 ]);
                 $pay_id = $pdo->lastInsertId();
                 $buffer_end = date('Y-m-d H:i:s', strtotime($slot['end']) + $subBuffer * 60);
                 $qr_token = bin2hex(random_bytes(16));
                 $r = $pdo->prepare('INSERT INTO reservations (driver_id, spot_id, vehicle_id, payment_id, subscription_id, start_time, end_time, buffer_end_time, status, qr_code_token, base_cost, tax_amount, discount_amount, final_cost, escrow_amount, promo_code, buffer_applied, grace_period_mins) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
                 $r->execute([$uid, $spot['spot_id'], $vehicle_id, $pay_id, $subscription_id, $slot['start'], $slot['end'], $buffer_end, 'confirmed', $qr_token, $cost['base'], $cost['tax'], $cost['discount'], $cost['total'], $cost['escrow'], $promo ?: null, 1, 5]);
+                $res_id = (int)$pdo->lastInsertId();
+                (new PaymentModel($pdo))->lockFunds($res_id, (float)$cost['total']);
             }
             $pdo->commit();
             flash('ok', 'Subscription created. Recurring reservations were generated successfully.');
@@ -527,7 +543,7 @@ class DriverController extends BaseController
             $where .= ' AND r.status = ?';
             $params[] = $filter;
         }
-        $stmt = $pdo->prepare("SELECT r.reservation_id, r.start_time, r.end_time, r.status, r.final_cost, r.qr_code_token, r.subscription_id, ps.address FROM reservations r JOIN parking_spots ps ON r.spot_id = ps.spot_id WHERE $where ORDER BY r.created_at DESC");
+        $stmt = $pdo->prepare("SELECT r.reservation_id, r.start_time, r.end_time, r.status, r.final_cost, r.qr_code_token, r.subscription_id, ps.address, p.payment_status FROM reservations r JOIN parking_spots ps ON r.spot_id = ps.spot_id LEFT JOIN payments p ON p.payment_id = r.payment_id WHERE $where ORDER BY r.created_at DESC");
         $stmt->execute($params);
         $rows = $stmt->fetchAll();
 
@@ -552,10 +568,11 @@ class DriverController extends BaseController
     {
         require_role('driver');
         $pdo = Database::getConnection();
+        new PaymentModel($pdo);
         $u = current_user();
         $uid = $u['id'];
         $id = (int)($_GET['id'] ?? 0);
-        $res = $pdo->prepare('SELECT r.*, ps.address, ps.latitude, ps.longitude, ps.base_rate, ps.owner_id, ps.availability_start, ps.availability_end, vp.license_plate, pe.default_multiplier, bm.buffer_duration_mins FROM reservations r JOIN parking_spots ps ON r.spot_id = ps.spot_id LEFT JOIN vehicle_profiles vp ON r.vehicle_id = vp.vehicle_id LEFT JOIN pricing_engine pe ON pe.spot_id = ps.spot_id LEFT JOIN buffer_manager bm ON bm.spot_id = ps.spot_id WHERE r.reservation_id = ? AND r.driver_id = ?');
+        $res = $pdo->prepare('SELECT r.*, ps.address, ps.latitude, ps.longitude, ps.base_rate, ps.owner_id, ps.availability_start, ps.availability_end, vp.license_plate, pe.default_multiplier, bm.buffer_duration_mins, p.payment_status, p.escrow_status FROM reservations r JOIN parking_spots ps ON r.spot_id = ps.spot_id LEFT JOIN vehicle_profiles vp ON r.vehicle_id = vp.vehicle_id LEFT JOIN pricing_engine pe ON pe.spot_id = ps.spot_id LEFT JOIN buffer_manager bm ON bm.spot_id = ps.spot_id LEFT JOIN payments p ON p.payment_id = r.payment_id WHERE r.reservation_id = ? AND r.driver_id = ?');
         $res->execute([$id, $uid]);
         $r = $res->fetch();
         if (!$r) {
@@ -575,17 +592,16 @@ class DriverController extends BaseController
             }
             if ($act === 'checkout' && $r['status'] === 'active') {
                 $now = date('Y-m-d H:i:s');
-                $overstay = max(0, (strtotime($now) - strtotime($r['end_time'])) / 60);
-                $penalty = 0;
-                if ($overstay > 5) {
-                    $rate_per_min = ($r['base_rate'] * ($r['default_multiplier'] ?? 1)) / 60;
-                    $penalty = round($overstay * $rate_per_min * 1.5, 2);
-                }
-                $pdo->prepare("UPDATE reservations SET status='completed', check_out_time=?, overstay_minutes=?, penalty_amount=? WHERE reservation_id=?")->execute([$now, (int)$overstay, $penalty, $id]);
+                $penaltyBreakdown = (new PenaltyModel())->calculateOverstayPenalty($r['end_time'], $now);
+                $overstay = (int)$penaltyBreakdown['overstay_minutes'];
+                $penalty = (float)$penaltyBreakdown['penalty_amount'];
+                $updatedTotal = (float)$r['final_cost'] + $penalty;
+                $pdo->prepare("UPDATE reservations SET status='completed', check_out_time=?, overstay_minutes=?, penalty_amount=?, final_cost=? WHERE reservation_id=?")->execute([$now, $overstay, $penalty, $updatedTotal, $id]);
                 $pdo->prepare("UPDATE parking_spots SET status='available' WHERE spot_id=?")->execute([$r['spot_id']]);
-                $pdo->prepare("UPDATE parking_sessions SET end_time=?, status=?, duration_mins=? WHERE reservation_id=?")->execute([$now, $overstay > 5 ? 'overstay' : 'completed', (int)((strtotime($now) - strtotime($r['check_in_time'])) / 60), $id]);
-                $pdo->prepare("UPDATE payments SET escrow_status='released' WHERE payment_id=?")->execute([$r['payment_id']]);
-                $owner_share = round($r['final_cost'] * 0.85, 2);
+                $pdo->prepare("UPDATE parking_sessions SET end_time=?, status=?, duration_mins=? WHERE reservation_id=?")->execute([$now, $overstay > 0 ? 'overstay' : 'completed', (int)((strtotime($now) - strtotime($r['check_in_time'])) / 60), $id]);
+                $pdo->prepare("UPDATE payments SET final_amount = final_amount + ? WHERE payment_id=?")->execute([$penalty, $r['payment_id']]);
+                (new PaymentModel($pdo))->releaseFunds($id);
+                $owner_share = round($updatedTotal * 0.85, 2);
                 $pdo->prepare("UPDATE space_owners SET earnings_balance = earnings_balance + ? WHERE owner_id=?")->execute([$owner_share, $r['owner_id']]);
                 $pdo->prepare('INSERT INTO audit_log (event_type, entity_id, actor_id, spot_id, new_state) VALUES (?,?,?,?,?)')->execute(['QR_CHECKOUT', $id, $uid, $r['spot_id'], 'completed']);
                 flash('ok', 'Checked out.' . ($penalty > 0 ? " Overstay penalty: {$penalty} EGP." : ''));
@@ -627,7 +643,8 @@ class DriverController extends BaseController
                     $refund = 50;
                 }
                 $pdo->prepare("UPDATE reservations SET status='cancelled', cancelled_at=NOW() WHERE reservation_id=?")->execute([$id]);
-                $pdo->prepare("UPDATE payments SET escrow_status='refunded', refund_percent=?, refund_amount=? WHERE payment_id=?")->execute([$refund, round($r['final_cost'] * $refund / 100, 2), $r['payment_id']]);
+                $pdo->prepare("UPDATE payments SET refund_percent=?, refund_amount=? WHERE payment_id=?")->execute([$refund, round($r['final_cost'] * $refund / 100, 2), $r['payment_id']]);
+                (new PaymentModel($pdo))->refundFunds($id);
                 $pdo->prepare("UPDATE parking_spots SET status='available' WHERE spot_id=?")->execute([$r['spot_id']]);
                 $wait = $pdo->prepare('SELECT driver_id FROM waitlist WHERE spot_id=? ORDER BY joined_at ASC LIMIT 1');
                 $wait->execute([$r['spot_id']]);

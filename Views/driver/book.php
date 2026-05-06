@@ -138,11 +138,19 @@ $is_subscription_ui = $booking_mode_post === 'subscription';
 <div class="card mb-3">
     <div class="card-title">Price preview</div>
     <table style="max-width:500px">
-        <tr><td class="text-muted">Base cost</td><td style="padding-left:24px"><?= number_format($preview['base'], 2) ?> EGP</td></tr>
+        <tr><td class="text-muted">Base price</td><td style="padding-left:24px"><?= number_format($preview['base_before_peak'] ?? $preview['base'], 2) ?> EGP</td></tr>
+        <?php if (!empty($preview['peak_applied'])): ?>
+        <tr>
+            <td class="text-muted">Peak adjustment</td>
+            <td style="padding-left:24px;color:var(--amber)">+ <?= number_format((float)$preview['peak_adjustment'], 2) ?> EGP <span class="badge badge-amber">Peak <?= !empty($preview['peak_reason']) && $preview['peak_reason'] === 'special_event' ? '(Event)' : '(Hour)' ?></span></td>
+        </tr>
+        <?php endif; ?>
+        <tr><td class="text-muted">Price after peak rule</td><td style="padding-left:24px"><?= number_format($preview['base'], 2) ?> EGP</td></tr>
         <tr><td class="text-muted">Discount</td><td style="padding-left:24px;color:var(--green)">- <?= number_format($preview['discount'], 2) ?> EGP</td></tr>
         <tr><td class="text-muted">VAT</td><td style="padding-left:24px"><?= number_format($preview['tax'], 2) ?> EGP</td></tr>
         <tr style="font-weight:700"><td>Total</td><td style="padding-left:24px"><?= number_format($preview['total'], 2) ?> EGP</td></tr>
         <tr><td class="text-muted">Escrow</td><td style="padding-left:24px"><?= number_format($preview['escrow'], 2) ?> EGP</td></tr>
+        <tr><td class="text-muted">Payment status</td><td style="padding-left:24px"><span class="badge badge-amber">Payment Held in Escrow</span></td></tr>
         <?php if (($preview['booking_mode'] ?? 'one_time') === 'subscription'): ?>
         <tr><td class="text-muted">Subscription period</td><td style="padding-left:24px"><?= htmlspecialchars($preview['sub_period_start_date'] ?? '') ?> → <?= htmlspecialchars($preview['sub_period_end_date'] ?? '') ?></td></tr>
         <tr><td class="text-muted">Subscription discount</td><td style="padding-left:24px"><?= number_format((float)$preview['subscription_discount_percent'], 2) ?>%</td></tr>

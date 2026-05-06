@@ -17,7 +17,7 @@
     <?php else: ?>
     <div class="table-wrap">
         <table>
-            <thead><tr><th>#</th><th>Spot</th><th>Start</th><th>End</th><th>Cost</th><th>Status</th><th>Type</th><th></th></tr></thead>
+            <thead><tr><th>#</th><th>Spot</th><th>Start</th><th>End</th><th>Cost</th><th>Status</th><th>Payment</th><th>Type</th><th></th></tr></thead>
             <tbody>
             <?php
             $badges = ['confirmed'=>'badge-blue','active'=>'badge-green','completed'=>'badge-gray','cancelled'=>'badge-red','no_show'=>'badge-amber','pending'=>'badge-amber'];
@@ -31,6 +31,15 @@
                 <td><?= date('d M, H:i', strtotime($b['end_time'])) ?></td>
                 <td><?= number_format($b['final_cost'], 2) ?> EGP</td>
                 <td><span class="badge <?= $bc ?>"><?= $b['status'] ?></span></td>
+                <td>
+                    <?php if (($b['payment_status'] ?? '') === 'completed'): ?>
+                        <span class="badge badge-green">Payment Completed</span>
+                    <?php elseif (($b['payment_status'] ?? '') === 'refunded'): ?>
+                        <span class="badge badge-red">Refunded</span>
+                    <?php else: ?>
+                        <span class="badge badge-amber">Held in Escrow</span>
+                    <?php endif; ?>
+                </td>
                 <td><?= !empty($b['subscription_id']) ? 'Subscription' : 'One-time' ?></td>
                 <td><a href="<?= htmlspecialchars(route_url('/driver/bookingdetail?id=' . $b['reservation_id'])) ?>" class="btn btn-outline btn-sm">View</a></td>
             </tr>

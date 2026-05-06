@@ -32,8 +32,24 @@
         <?php endif; ?>
         <tr><td class="text-muted">VAT</td><td style="padding-left:24px"><?= number_format($r['tax_amount'], 2) ?> EGP</td></tr>
         <tr style="font-weight:700"><td>Total</td><td style="padding-left:24px"><?= number_format($r['final_cost'], 2) ?> EGP</td></tr>
+        <tr>
+            <td class="text-muted">Escrow status</td>
+            <td style="padding-left:24px">
+                <?php if (($r['payment_status'] ?? '') === 'completed'): ?>
+                    <span class="badge badge-green">Payment Completed</span>
+                <?php elseif (($r['payment_status'] ?? '') === 'refunded'): ?>
+                    <span class="badge badge-red">Payment Refunded</span>
+                <?php else: ?>
+                    <span class="badge badge-amber">Payment Held in Escrow</span>
+                <?php endif; ?>
+            </td>
+        </tr>
         <?php if ($r['penalty_amount'] > 0): ?>
+        <tr><td class="text-muted">Reserved Time</td><td style="padding-left:24px"><?= date('d M Y, H:i', strtotime($r['end_time'])) ?></td></tr>
+        <tr><td class="text-muted">Actual Time</td><td style="padding-left:24px"><?= $r['check_out_time'] ? date('d M Y, H:i', strtotime($r['check_out_time'])) : '-' ?></td></tr>
+        <tr><td class="text-muted">Overstay Duration</td><td style="padding-left:24px"><?= (int)$r['overstay_minutes'] ?> minutes</td></tr>
         <tr><td class="text-muted">Overstay penalty</td><td style="padding-left:24px;color:var(--red)"><?= number_format($r['penalty_amount'], 2) ?> EGP</td></tr>
+        <tr style="font-weight:700"><td>Total cost (with penalty)</td><td style="padding-left:24px"><?= number_format($r['final_cost'], 2) ?> EGP</td></tr>
         <?php endif; ?>
     </table>
 </div>
