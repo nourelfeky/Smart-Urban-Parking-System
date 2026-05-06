@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-require_once __DIR__ . '/cityslot/bootstrap.php';
+require_once __DIR__ . '/bootstrap.php';
 
 $router = new Router();
 

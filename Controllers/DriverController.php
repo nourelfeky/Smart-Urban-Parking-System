@@ -792,7 +792,7 @@ class DriverController extends BaseController
                     if (in_array($ext, ['jpg', 'jpeg', 'png', 'pdf'])) {
                         $fname = 'ev_' . $uid . '_' . $fine_id . '_' . time() . '.' . $ext;
                         move_uploaded_file($_FILES['evidence']['tmp_name'], __DIR__ . '/../uploads/evidence/' . $fname);
-                        $ev_url = '/cityslot/uploads/evidence/' . $fname;
+                        $ev_url = base_url('/uploads/evidence/' . $fname);
                     }
                 }
                 $chk = $pdo->prepare('SELECT COUNT(*) FROM appeals WHERE fine_id=? AND driver_id=?');

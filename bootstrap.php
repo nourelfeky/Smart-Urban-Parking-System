@@ -30,7 +30,7 @@ function route_url(string $path = ''): string
 function asset_url(string $path = ''): string
 {
     $path = '/' . ltrim($path, '/');
-    return base_url('/cityslot/assets' . $path);
+    return base_url('/assets' . $path);
 }
 
 spl_autoload_register(function (string $class): void {
