@@ -234,28 +234,131 @@ final class OwnerReportModel
         return $out;
     }
 
-    public function downloadMonthlyPdf(int $ownerId, string $month, string $ownerName, bool $fake = true): void
+    /**
+     * @param array{
+     *   month: string,
+     *   spot_count: int,
+     *   booked_minutes: int,
+     *   available_minutes: int,
+     *   occupancy_rate: float,
+     *   top_slots: array<int, array{hour: int, sessions: int}>
+     * } $metrics
+     * @param array<int, array{date: string, sessions: int, gross: float}> $daily
+     * @param array<int, array{hour: int, sessions: int}> $hourly
+     */
+    public function downloadMonthlyPdf(string $month, string $ownerName, array $metrics, array $daily, array $hourly): void
     {
-        $m = $fake
-            ? $this->getFakeMonthlyOwnerMetrics($ownerId, $month)
-            : $this->getMonthlyOwnerMetrics($ownerId, $month);
+        $cTitle = [15, 23, 42];
+        $cSection = [30, 64, 175];
+        $cAccent = [2, 132, 199];
+        $cBody = [31, 41, 55];
+        $cMuted = [71, 85, 105];
+
+        $line = str_repeat('-', 74);
+        $generatedAt = date('Y-m-d H:i:s');
+        $monthLabel = DateTime::createFromFormat('Y-m', $month)?->format('F Y') ?? $month;
 
         $pdf = new SimplePdf("Owner Monthly Report - {$month}");
-        $pdf->addLine("Owner: {$ownerName}");
-        $pdf->addLine("Report type: " . ($fake ? 'FAKE (demo)' : 'LIVE'));
-        $pdf->addLine("Spots: " . $m['spot_count']);
-        $pdf->addLine("Occupancy rate: " . number_format($m['occupancy_rate'], 2) . "%");
-        $pdf->addLine("Booked minutes: " . $m['booked_minutes']);
+        $pdf->addLine($line, $cMuted);
+        $pdf->addLine("SMART URBAN PARKING SYSTEM - MONTHLY OWNER REPORT", $cTitle, 12);
+        $pdf->addLine($line, $cMuted);
+        $pdf->addLine("Report Month      : {$monthLabel}", $cBody);
+        $pdf->addLine("Space Owner       : {$ownerName}", $cBody);
+        $pdf->addLine("Generated At      : {$generatedAt}", $cBody);
+        $pdf->addLine("Data Source       : Live statistics and analytics", $cBody);
         $pdf->addLine("");
-        $pdf->addLine("Top time slots (by booking start hour):");
-        if (empty($m['top_slots'])) {
-            $pdf->addLine("  - No bookings in this month.");
-        } else {
-            foreach ($m['top_slots'] as $row) {
-                $h = str_pad((string)$row['hour'], 2, '0', STR_PAD_LEFT);
-                $pdf->addLine("  - {$h}:00 — {$row['sessions']} sessions");
+        $pdf->addLine("1) EXECUTIVE SUMMARY", $cSection, 12);
+        $pdf->addLine($line, $cMuted);
+
+        $totalSessions = 0;
+        $totalGross = 0.0;
+        $bestDay = null;
+        foreach ($daily as $row) {
+            $sessions = (int)($row['sessions'] ?? 0);
+            $gross = (float)($row['gross'] ?? 0);
+            $totalSessions += $sessions;
+            $totalGross += $gross;
+            if ($bestDay === null || $sessions > $bestDay['sessions']) {
+                $bestDay = ['date' => (string)$row['date'], 'sessions' => $sessions];
             }
         }
+
+        $peakHour = ['hour' => 0, 'sessions' => 0];
+        foreach ($hourly as $row) {
+            $sessions = (int)($row['sessions'] ?? 0);
+            if ($sessions > $peakHour['sessions']) {
+                $peakHour = ['hour' => (int)$row['hour'], 'sessions' => $sessions];
+            }
+        }
+
+        $occupancyRate = (float)($metrics['occupancy_rate'] ?? 0.0);
+        $performanceBand = 'Low';
+        if ($occupancyRate >= 60.0) {
+            $performanceBand = 'Excellent';
+        } elseif ($occupancyRate >= 40.0) {
+            $performanceBand = 'Good';
+        } elseif ($occupancyRate >= 25.0) {
+            $performanceBand = 'Moderate';
+        }
+
+        $pdf->addLine("This month recorded {$totalSessions} sessions with "
+            . number_format($totalGross, 2) . " EGP in gross revenue.", $cBody);
+        $pdf->addLine("Overall utilization is " . number_format($occupancyRate, 2)
+            . "% ({$performanceBand} performance band).", $cAccent);
+
+        $pdf->addLine("");
+        $pdf->addLine("2) KEY PERFORMANCE INDICATORS", $cSection, 12);
+        $pdf->addLine($line, $cMuted);
+        $pdf->addLine("Active Spaces      : " . number_format((int)($metrics['spot_count'] ?? 0)), $cBody);
+        $pdf->addLine("Booked Minutes     : " . number_format((int)($metrics['booked_minutes'] ?? 0)), $cBody);
+        $pdf->addLine("Available Minutes  : " . number_format((int)($metrics['available_minutes'] ?? 0)), $cBody);
+        $pdf->addLine("Occupancy Rate     : " . number_format($occupancyRate, 2) . "%", $cAccent);
+        $pdf->addLine("Gross Revenue      : " . number_format($totalGross, 2) . " EGP", $cAccent);
+
+        $pdf->addLine("");
+        $pdf->addLine("3) DEMAND INSIGHTS", $cSection, 12);
+        $pdf->addLine($line, $cMuted);
+        if ($bestDay !== null && $bestDay['date'] !== '') {
+            $pdf->addLine("Busiest Day        : {$bestDay['date']} ({$bestDay['sessions']} sessions)", $cBody);
+        } else {
+            $pdf->addLine("Busiest Day        : No completed session data", $cBody);
+        }
+        $peakHourLabel = str_pad((string)$peakHour['hour'], 2, '0', STR_PAD_LEFT) . ':00';
+        $pdf->addLine("Peak Start Hour    : {$peakHourLabel} ({$peakHour['sessions']} sessions)", $cBody);
+
+        $pdf->addLine("Top Time Slots     :", $cAccent);
+        if (empty($metrics['top_slots'])) {
+            $pdf->addLine("  - No bookings in this month.", $cMuted);
+        } else {
+            foreach ($metrics['top_slots'] as $row) {
+                $h = str_pad((string)$row['hour'], 2, '0', STR_PAD_LEFT);
+                $pdf->addLine("  - {$h}:00  |  " . (int)$row['sessions'] . " sessions", $cBody);
+            }
+        }
+
+        $topDays = $daily;
+        usort($topDays, static fn(array $a, array $b): int => ((int)$b['sessions']) <=> ((int)$a['sessions']));
+        $topDays = array_values(array_filter($topDays, static fn(array $r): bool => (int)($r['sessions'] ?? 0) > 0));
+        $topDays = array_slice($topDays, 0, 3);
+
+        if ($topDays !== []) {
+            $pdf->addLine("Top Days           :", $cAccent);
+            foreach ($topDays as $d) {
+                $pdf->addLine("  - {$d['date']}  |  " . (int)$d['sessions']
+                    . " sessions | " . number_format((float)$d['gross'], 2) . " EGP", $cBody);
+            }
+        }
+
+        $pdf->addLine("");
+        $pdf->addLine("4) RECOMMENDED ACTIONS", $cSection, 12);
+        $pdf->addLine($line, $cMuted);
+        $pdf->addLine("- Keep higher availability during peak hours to capture more demand.", $cBody);
+        $pdf->addLine("- Consider dynamic pricing for top-performing hours and days.", $cBody);
+        $pdf->addLine("- Review low-demand periods and run promotions to improve occupancy.", $cBody);
+
+        $pdf->addLine("");
+        $pdf->addLine($line, $cMuted);
+        $pdf->addLine("End of Report", $cMuted);
 
         $pdf->outputDownload("owner_report_{$month}.pdf");
     }

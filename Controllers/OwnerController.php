@@ -125,27 +125,11 @@ class OwnerController extends BaseController
             return;
         }
 
-        // If a static PDF exists (requested by user), serve it directly.
-        if (defined('OWNER_REPORT_STATIC_PDF')) {
-            $path = (string)OWNER_REPORT_STATIC_PDF;
-            if ($path !== '' && is_file($path)) {
-                if (function_exists('ob_get_level')) {
-                    while (ob_get_level() > 0) {
-                        @ob_end_clean();
-                    }
-                }
-                if (!headers_sent()) {
-                    header('Content-Type: application/pdf');
-                    header('Content-Disposition: attachment; filename="parking_system_report.pdf"');
-                    header('Content-Length: ' . filesize($path));
-                }
-                readfile($path);
-                return;
-            }
-        }
-
-        // Per user request: downloadable report is a "fake" monthly PDF (demo sample).
-        (new OwnerReportModel($pdo))->downloadMonthlyPdf($uid, $month, (string)($u['name'] ?? 'Owner'), true);
+        $reportModel = new OwnerReportModel($pdo);
+        $metrics = $reportModel->getMonthlyOwnerMetrics($uid, $month);
+        $daily = $reportModel->getDailySessions($uid, $month);
+        $hourly = $reportModel->getHourlySessions($uid, $month);
+        $reportModel->downloadMonthlyPdf($month, (string)($u['name'] ?? 'Owner'), $metrics, $daily, $hourly);
     }
 
     public static function spots(): void

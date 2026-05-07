@@ -6,16 +6,25 @@
  */
 final class SimplePdf
 {
-    /** @var list<string> */
+    /** @var list<array{text:string,color:array{int,int,int},size:int}> */
     private array $lines = [];
 
     public function __construct(private string $title = 'Report')
     {
     }
 
-    public function addLine(string $line = ''): void
+    /**
+     * @param array{int,int,int}|null $rgb Text color as [R,G,B] in 0..255.
+     */
+    public function addLine(string $line = '', ?array $rgb = null, int $size = 11): void
     {
-        $this->lines[] = $this->escape($this->toWinAnsi($line));
+        $color = $this->normalizeRgb($rgb);
+        $size = max(8, min(18, (int)$size));
+        $this->lines[] = [
+            'text' => $this->escape($this->toWinAnsi($line)),
+            'color' => $color,
+            'size' => $size,
+        ];
     }
 
     /**
@@ -49,13 +58,16 @@ final class SimplePdf
         // Simple single-page text layout (Courier-like).
         $y = 780;
         $chunks = [];
-        $chunks[] = "BT\n/F1 11 Tf\n50 {$y} Td\n";
+        $chunks[] = "BT\n/F1 11 Tf\n0 0 0 rg\n50 {$y} Td\n";
 
         // Title
-        $chunks[] = '(' . $this->escape($this->toWinAnsi($this->title)) . ") Tj\n0 -18 Td\n";
+        $chunks[] = "/F1 13 Tf\n" . $this->rgbToPdf([15, 23, 42]) . " rg\n";
+        $chunks[] = '(' . $this->escape($this->toWinAnsi($this->title)) . ") Tj\n0 -20 Td\n";
 
         foreach ($this->lines as $line) {
-            $chunks[] = '(' . $line . ") Tj\n0 -14 Td\n";
+            $step = max(12, $line['size'] + 3);
+            $chunks[] = "/F1 {$line['size']} Tf\n" . $this->rgbToPdf($line['color']) . " rg\n";
+            $chunks[] = '(' . $line['text'] . ") Tj\n0 -{$step} Td\n";
         }
 
         $chunks[] = "ET\n";
@@ -65,6 +77,34 @@ final class SimplePdf
     private function escape(string $s): string
     {
         return str_replace(['\\', '(', ')'], ['\\\\', '\\(', '\\)'], $s);
+    }
+
+    /**
+     * @param array{int,int,int} $rgb
+     */
+    private function rgbToPdf(array $rgb): string
+    {
+        $r = number_format($rgb[0] / 255, 3, '.', '');
+        $g = number_format($rgb[1] / 255, 3, '.', '');
+        $b = number_format($rgb[2] / 255, 3, '.', '');
+        return "{$r} {$g} {$b}";
+    }
+
+    /**
+     * @param array{int,int,int}|null $rgb
+     * @return array{int,int,int}
+     */
+    private function normalizeRgb(?array $rgb): array
+    {
+        if (!is_array($rgb) || count($rgb) !== 3) {
+            return [0, 0, 0];
+        }
+
+        return [
+            max(0, min(255, (int)$rgb[0])),
+            max(0, min(255, (int)$rgb[1])),
+            max(0, min(255, (int)$rgb[2])),
+        ];
     }
 
     /**
