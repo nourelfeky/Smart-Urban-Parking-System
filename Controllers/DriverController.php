@@ -275,6 +275,25 @@ class DriverController extends BaseController
             'booking_mode' => ($_POST['booking_mode'] ?? $_GET['booking_mode'] ?? 'one_time') === 'subscription' ? 'subscription' : 'one_time',
         ];
 
+        $time_based_waitlist = false;
+        if ($alt_ctx['booking_mode'] === 'one_time') {
+            $time_based_waitlist = self::isOneTimeWindowBlockedForSpot(
+                $spot,
+                $listingOk,
+                $alt_ctx['start'],
+                $alt_ctx['end'],
+                $bookingManager
+            );
+        } elseif (
+            $alt_ctx['booking_mode'] === 'subscription'
+            && $_SERVER['REQUEST_METHOD'] === 'POST'
+            && !isset($_POST['waitlist_spot_action'])
+        ) {
+            $time_based_waitlist = self::isSubscriptionScheduleBlockedMessage($error);
+        }
+
+        $show_spot_waitlist = $on_spot_waitlist || $time_based_waitlist;
+
         self::render('driver/book', [
             'spot' => $spot,
             'vehicles' => $vehicles,
@@ -283,9 +302,56 @@ class DriverController extends BaseController
             'preview' => $preview,
             'recommendations' => $recommendations,
             'on_spot_waitlist' => $on_spot_waitlist,
+            'show_spot_waitlist' => $show_spot_waitlist,
             'alt_ctx' => $alt_ctx,
             'pageTitle' => 'Book Spot',
         ]);
+    }
+
+    /** Per-spot waitlist join: only when a concrete one-time window is outside owner hours or conflicts (incl. buffer). */
+    private static function isOneTimeWindowBlockedForSpot(
+        array $spot,
+        bool $listingOk,
+        string $startRaw,
+        string $endRaw,
+        BookingManager $bookingManager
+    ): bool {
+        if (!$listingOk) {
+            return false;
+        }
+        if (($spot['status'] ?? '') !== 'available' || ($spot['zone_status'] ?? '') === 'locked') {
+            return false;
+        }
+
+        $rangeCheck = ParkingBookingValidator::validateClientDateTimePair($startRaw, $endRaw);
+        if (isset($rangeCheck['error'])) {
+            return false;
+        }
+        $start = $rangeCheck['start'];
+        $end = $rangeCheck['end'];
+
+        if (ParkingBookingValidator::reservationFitsOwnerAvailability(
+            $start,
+            $end,
+            $spot['availability_start'] ?? null,
+            $spot['availability_end'] ?? null
+        ) !== null) {
+            return true;
+        }
+
+        $bufferMins = $bookingManager->getBufferMinutes($spot);
+
+        return $bookingManager->hasBufferedConflict((int)$spot['spot_id'], $start, $end, $bufferMins);
+    }
+
+    private static function isSubscriptionScheduleBlockedMessage(string $error): bool
+    {
+        if ($error === '') {
+            return false;
+        }
+        return str_contains($error, 'One or more recurring slots conflict')
+            || str_contains($error, 'A recurring slot conflicted during confirmation')
+            || str_contains($error, 'Affected recurring slot:');
     }
 
     /**

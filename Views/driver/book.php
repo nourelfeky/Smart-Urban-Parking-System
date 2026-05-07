@@ -4,6 +4,7 @@ $booking_mode = $booking_mode === 'subscription' ? 'subscription' : 'one_time';
 $is_subscription_ui = $booking_mode === 'subscription';
 $alt_ctx = $alt_ctx ?? ['start' => '', 'end' => '', 'booking_mode' => 'one_time'];
 $on_spot_waitlist = $on_spot_waitlist ?? false;
+$show_spot_waitlist = $show_spot_waitlist ?? false;
 $pref_start = $_POST['start_time'] ?? ($alt_ctx['start'] ?? ($_GET['start'] ?? ''));
 $pref_end = $_POST['end_time'] ?? ($alt_ctx['end'] ?? ($_GET['end'] ?? ''));
 $wl_q = $_GET;
@@ -32,9 +33,14 @@ $waitlist_action_url = route_url('/driver/book?' . http_build_query($wl_q));
 <div class="alert alert-error"><?= $err ?></div>
 <?php endif; ?>
 
+<?php if ($show_spot_waitlist): ?>
 <div class="card mb-3">
     <div class="card-title">Waitlist for this spot</div>
-    <p class="text-muted" style="margin-top:-6px">If this spot is booked or the time you want isn’t free, join the waitlist. We’ll notify you in-app when it may be available (e.g. after checkout or cancellation).</p>
+    <?php if ($on_spot_waitlist): ?>
+        <p class="text-muted" style="margin-top:-6px">You’re on the waitlist for this address. Leave anytime, or stay to get in-app alerts when it may free up.</p>
+    <?php else: ?>
+        <p class="text-muted" style="margin-top:-6px">Your selected time isn’t available on this spot right now. Join the waitlist and we’ll notify you in-app when it may open (e.g. after checkout or cancellation).</p>
+    <?php endif; ?>
     <form method="post" action="<?= htmlspecialchars($waitlist_action_url) ?>" class="flex gap-2 items-center" style="flex-wrap:wrap">
         <input type="hidden" name="waitlist_spot_id" value="<?= (int)$spot['spot_id'] ?>">
         <?php if (!$on_spot_waitlist): ?>
@@ -47,6 +53,7 @@ $waitlist_action_url = route_url('/driver/book?' . http_build_query($wl_q));
         <?php endif; ?>
     </form>
 </div>
+<?php endif; ?>
 
 <?php if (!empty($recommendations)): ?>
 <div class="card mb-3">
@@ -115,25 +122,23 @@ $waitlist_action_url = route_url('/driver/book?' . http_build_query($wl_q));
         </div>
         <div class="form-group">
             <label>Booking type</label>
-            <select name="booking_mode" id="booking_mode" class="form-control" aria-controls="one-time-panel subscription-panel">
-                <option value="one_time" <?= !$is_subscription_ui ? 'selected' : '' ?>>One-time booking</option>
-                <option value="subscription" <?= $is_subscription_ui ? 'selected' : '' ?>>Commuter subscription (recurring)</option>
-            </select>
-        </div>
-
-        <div class="flex gap-2 mb-3" style="flex-wrap:wrap">
+            <input type="hidden" name="booking_mode" id="booking_mode" value="<?= htmlspecialchars($booking_mode, ENT_QUOTES, 'UTF-8') ?>">
             <?php
                 $spotIdQ = isset($_GET['spot']) ? (int)$_GET['spot'] : 0;
                 $spotQuery = $spotIdQ ? ('?spot=' . $spotIdQ) : '';
+                $bookingModeSuffix = ($spotQuery ? '&' : '?') . 'booking_mode=';
             ?>
-            <a class="btn btn-outline btn-sm" href="<?= htmlspecialchars(route_url('/driver/book' . $spotQuery . ($spotQuery ? '&' : '?') . 'booking_mode=one_time')) ?>">One-time booking</a>
-            <a class="btn btn-outline btn-sm" href="<?= htmlspecialchars(route_url('/driver/book' . $spotQuery . ($spotQuery ? '&' : '?') . 'booking_mode=subscription')) ?>">Commuter subscription</a>
-            <div class="text-muted" style="align-self:center">If the dropdown doesn’t toggle, use these buttons.</div>
+            <div class="flex gap-2" style="flex-wrap:wrap" role="group" aria-label="Booking type">
+                <a class="btn btn-sm <?= !$is_subscription_ui ? 'btn-primary' : 'btn-outline' ?>"
+                   href="<?= htmlspecialchars(route_url('/driver/book' . $spotQuery . $bookingModeSuffix . 'one_time')) ?>">One-time booking</a>
+                <a class="btn btn-sm <?= $is_subscription_ui ? 'btn-primary' : 'btn-outline' ?>"
+                   href="<?= htmlspecialchars(route_url('/driver/book' . $spotQuery . $bookingModeSuffix . 'subscription')) ?>">Commuter subscription</a>
+            </div>
         </div>
 
         <noscript>
             <div class="alert alert-info" style="margin-top:8px">
-                JavaScript is disabled. The commuter subscription panel will show only after you submit the form with “Commuter subscription (recurring)” selected.
+                JavaScript is disabled. Subscription fields appear when you open this page with <code>?booking_mode=subscription</code> (use the commuter subscription button).
             </div>
         </noscript>
 
@@ -365,8 +370,6 @@ $waitlist_action_url = route_url('/driver/book?' . http_build_query($wl_q));
 
         updateDurationWeeksUi();
     }
-
-    modeSel.addEventListener('change', syncPanels);
 
     var bookingForm = document.getElementById('booking-form');
     if (bookingForm) {
