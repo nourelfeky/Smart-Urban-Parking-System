@@ -3,6 +3,7 @@
 require_once __DIR__ . '/BaseController.php';
 require_once __DIR__ . '/../Core/Database.php';
 require_once __DIR__ . '/../Core/Auth.php';
+require_once __DIR__ . '/../Models/SpotApprovalModel.php';
 
 class AdminController extends BaseController
 {
@@ -16,6 +17,10 @@ class AdminController extends BaseController
         $pending_fin = $pdo->query("SELECT COUNT(*) FROM fines WHERE status='pending'")->fetchColumn();
         $pending_app = $pdo->query("SELECT COUNT(*) FROM appeals WHERE status='pending'")->fetchColumn();
         $pending_ver = $pdo->query("SELECT COUNT(*) FROM document_repository WHERE status='pending'")->fetchColumn();
+        new SpotApprovalModel($pdo);
+        $pending_spot_listings = $pdo->query(
+            'SELECT COUNT(*) FROM parking_spots WHERE spot_approval_status=' . $pdo->quote(SpotApprovalModel::STATUS_PENDING_REVIEW)
+        )->fetchColumn();
         $total_rev = $pdo->query("SELECT COALESCE(SUM(final_cost),0) FROM reservations WHERE status='completed'")->fetchColumn();
 
         self::render('admin/dashboard', [
@@ -25,6 +30,7 @@ class AdminController extends BaseController
             'pending_fin' => $pending_fin,
             'pending_app' => $pending_app,
             'pending_ver' => $pending_ver,
+            'pending_spot_listings' => $pending_spot_listings,
             'total_rev' => $total_rev,
             'pageTitle' => 'Admin Dashboard',
         ]);
@@ -218,6 +224,60 @@ class AdminController extends BaseController
         ]);
     }
 
+    public static function spotApprovals(): void
+    {
+        require_role('admin');
+        $pdo = Database::getConnection();
+        new SpotApprovalModel($pdo);
+
+        if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+            $act = $_POST['action'] ?? '';
+            $submission_id = (int)($_POST['submission_id'] ?? 0);
+            $spot_id = (int)($_POST['spot_id'] ?? 0);
+            $owner_id = (int)($_POST['owner_id'] ?? 0);
+            $note = trim((string)($_POST['note'] ?? ''));
+
+            $subStmt = $pdo->prepare('SELECT * FROM spot_document_submissions WHERE submission_id=? AND review_status="pending" LIMIT 1');
+            $subStmt->execute([$submission_id]);
+            $sub = $subStmt->fetch();
+            if ($sub && (int)$sub['spot_id'] === $spot_id) {
+                if ($act === 'approve_spot_listing') {
+                    $pdo->prepare('UPDATE spot_document_submissions SET review_status="approved", admin_note=NULL, reviewed_at=NOW() WHERE submission_id=?')->execute([$submission_id]);
+                    $pdo->prepare('UPDATE parking_spots SET spot_approval_status=?, status="available" WHERE spot_id=?')->execute([SpotApprovalModel::STATUS_APPROVED, $spot_id]);
+                    $pdo->prepare('INSERT INTO notifications (recipient_id, channel, message, type, status) VALUES (?,?,?,?,?)')->execute([$owner_id, 'in_app', 'Your parking spot listing was approved by an admin and is now bookable.', 'spot_listing', 'sent']);
+                    $pdo->prepare('INSERT INTO audit_log (event_type, entity_id, actor_id, new_state) VALUES (?,?,?,?)')->execute(['SPOT_LISTING_APPROVED', (string)$spot_id, current_user()['id'], 'approved']);
+                    flash('ok', 'Spot listing approved.');
+                } elseif ($act === 'reject_spot_listing') {
+                    $pdo->prepare('UPDATE spot_document_submissions SET review_status="rejected", admin_note=?, reviewed_at=NOW() WHERE submission_id=?')->execute([$note ?: null, $submission_id]);
+                    $pdo->prepare('UPDATE parking_spots SET spot_approval_status=? WHERE spot_id=?')->execute([SpotApprovalModel::STATUS_REJECTED, $spot_id]);
+                    $pdo->prepare('INSERT INTO notifications (recipient_id, channel, message, type, status) VALUES (?,?,?,?,?)')->execute([$owner_id, 'in_app', 'Your spot listing documents were rejected. Reason: ' . ($note ?: 'See admin feedback.') . ' You may submit new documents from My Spots.', 'spot_listing', 'sent']);
+                    $pdo->prepare('INSERT INTO audit_log (event_type, entity_id, actor_id, new_state) VALUES (?,?,?,?)')->execute(['SPOT_LISTING_REJECTED', (string)$spot_id, current_user()['id'], 'rejected']);
+                    flash('ok', 'Spot listing rejected.');
+                }
+            }
+            redirect(route_url('/admin/spot-approvals'));
+        }
+
+        $q = <<<'SQL'
+SELECT s.submission_id, s.spot_id, s.owner_id, s.document_paths, s.submitted_at,
+       ps.address, ps.base_rate, u.name AS owner_name, u.email AS owner_email
+FROM spot_document_submissions s
+JOIN parking_spots ps ON ps.spot_id = s.spot_id
+JOIN users u ON u.id = s.owner_id
+WHERE s.review_status = 'pending'
+  AND ps.spot_approval_status = ?
+ORDER BY s.submitted_at ASC
+SQL;
+        $stmt = $pdo->prepare($q);
+        $stmt->execute([SpotApprovalModel::STATUS_PENDING_REVIEW]);
+        $pending = $stmt->fetchAll();
+
+        self::render('admin/spot_approvals', [
+            'pending' => $pending,
+            'pageTitle' => 'Spot listing approvals',
+        ]);
+    }
+
     public static function heatmap(): void
     {
         require_role('admin');
@@ -235,10 +295,16 @@ class AdminController extends BaseController
     {
         require_role('admin');
         $file = $_GET['file'] ?? '';
+        $bucket = $_GET['bucket'] ?? 'owner';
         if (!$file) {
             die('No file specified');
         }
-        $path = dirname(__DIR__, 2) . '/uploads/docs/' . basename($file);
+        $base = basename($file);
+        if ($bucket === 'spot') {
+            $path = dirname(__DIR__) . '/uploads/spot_docs/' . $base;
+        } else {
+            $path = dirname(__DIR__) . '/uploads/docs/' . $base;
+        }
         if (!file_exists($path)) {
             die('File not found');
         }
@@ -248,4 +314,3 @@ class AdminController extends BaseController
         readfile($path);
     }
 }
-//Hi I am testingggg

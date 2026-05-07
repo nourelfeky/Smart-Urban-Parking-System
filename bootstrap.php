@@ -63,6 +63,9 @@ if (!defined('SPECIAL_EVENT_WINDOWS')) {
 if (!defined('PENALTY_RATE_PER_MINUTE')) {
     define('PENALTY_RATE_PER_MINUTE', 0.5);
 }
+if (!defined('DEFAULT_PROMO_VALIDITY_MONTHS')) {
+    define('DEFAULT_PROMO_VALIDITY_MONTHS', 6);
+}
 
 // Optional: serve a prebuilt owner report PDF instead of generating one.
 // Set to an absolute path on the server (Windows example).

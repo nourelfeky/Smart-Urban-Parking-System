@@ -10,6 +10,8 @@ require_once __DIR__ . '/../Models/PaymentModel.php';
 require_once __DIR__ . '/../Models/PenaltyModel.php';
 require_once __DIR__ . '/../Models/WaitlistModel.php';
 require_once __DIR__ . '/../Models/ReviewModel.php';
+require_once __DIR__ . '/../Models/SpotApprovalModel.php';
+require_once __DIR__ . '/../Models/PromotionalCodeValidator.php';
 
 class DriverController extends BaseController
 {
@@ -19,9 +21,11 @@ class DriverController extends BaseController
         $pdo = Database::getConnection();
         $bookingManager = new BookingManager($pdo);
         $bookingManager->ensureSubscriptionSchema();
-        new PaymentModel($pdo);
         $u = current_user();
-        $uid = $u['id'];
+        $uid = (int)$u['id'];
+        PromotionalCodeValidator::ensureDefaultPromotionalCodes($pdo);
+        PromotionalCodeValidator::maybeNotifyGoldTierPromo($pdo, $uid);
+        new PaymentModel($pdo);
 
         $active_count = $pdo->prepare('SELECT COUNT(*) FROM reservations WHERE driver_id=? AND status IN ("confirmed","active")');
         $active_count->execute([$uid]);
@@ -78,12 +82,13 @@ class DriverController extends BaseController
     {
         require_role('driver');
         $pdo = Database::getConnection();
+        (new BookingManager($pdo))->ensureSubscriptionSchema();
         $q = trim($_GET['q'] ?? '');
         $ev_only = isset($_GET['ev_only']);
         $max_h = trim($_GET['max_h'] ?? '');
         $max_w = trim($_GET['max_w'] ?? '');
 
-        $where = ["ps.status = 'available'", "(z.status = 'active' OR ps.zone_id IS NULL)"];
+        $where = ["ps.status = 'available'", '(z.status = \'active\' OR ps.zone_id IS NULL)', SpotApprovalModel::isApprovedSql('ps')];
         $params = [];
         if ($q) {
             $where[] = 'ps.address LIKE ?';
@@ -120,6 +125,7 @@ class DriverController extends BaseController
     {
         require_role('driver');
         $pdo = Database::getConnection();
+        (new BookingManager($pdo))->ensureSubscriptionSchema();
         $u = current_user();
         $uid = (int)$u['id'];
         $wait = new WaitlistModel($pdo);
@@ -141,7 +147,7 @@ class DriverController extends BaseController
 
         $zonesStmt = $pdo->prepare(
             'SELECT z.zone_id, z.name,
-                    SUM(CASE WHEN ps.status = "available" THEN 1 ELSE 0 END) AS available_spots,
+                    SUM(CASE WHEN ps.status = "available" AND ' . SpotApprovalModel::isApprovedSql('ps') . ' THEN 1 ELSE 0 END) AS available_spots,
                     COUNT(ps.spot_id) AS total_spots,
                     zw.watch_id
              FROM zones z
@@ -167,6 +173,7 @@ class DriverController extends BaseController
         new PaymentModel($pdo);
         $bookingManager = new BookingManager($pdo);
         $bookingManager->ensureSubscriptionSchema();
+        PromotionalCodeValidator::ensureDefaultPromotionalCodes($pdo);
         $u = current_user();
         $uid = (int)$u['id'];
         $spot_id = (int)($_GET['spot'] ?? 0);
@@ -212,7 +219,10 @@ class DriverController extends BaseController
 
         $recommendations = [];
         $availabilityError = '';
-        if ($spot['status'] !== 'available' || $spot['zone_status'] === 'locked') {
+        $listingOk = (($spot['spot_approval_status'] ?? SpotApprovalModel::STATUS_APPROVED) === SpotApprovalModel::STATUS_APPROVED);
+        if (!$listingOk) {
+            $availabilityError = 'This parking spot is pending admin verification and cannot be booked yet.';
+        } elseif ($spot['status'] !== 'available' || $spot['zone_status'] === 'locked') {
             $availabilityError = $spot['zone_status'] === 'locked'
                 ? 'This zone is currently locked by a municipal event.'
                 : 'This spot is currently unavailable.';
@@ -311,6 +321,14 @@ class DriverController extends BaseController
         $action = $post['action'] ?? 'preview';
         $booking_mode = $post['booking_mode'] ?? 'one_time';
 
+        if (($spot['spot_approval_status'] ?? SpotApprovalModel::STATUS_APPROVED) !== SpotApprovalModel::STATUS_APPROVED) {
+            return [
+                'error' => 'This parking spot has not been approved by an admin yet.',
+                'preview' => null,
+                'recommendations' => [],
+            ];
+        }
+
         if ($spot['status'] !== 'available' || $spot['zone_status'] === 'locked') {
             $rec = $bookingManager->getAlternativeSpots($spot, 5);
             foreach ($rec as &$rr) {
@@ -380,6 +398,9 @@ class DriverController extends BaseController
         }
 
         $cost = self::calculateBookingCost($spot, $pdo, $promo, $loyalty_discount, $start, $end, 0);
+        if (($cost['promo_error'] ?? '') !== '') {
+            return ['error' => $cost['promo_error'], 'preview' => null];
+        }
         if ($action === 'preview') {
             return ['error' => '', 'preview' => array_merge($cost, ['start' => $start, 'end' => $end, 'vehicle_id' => $vehicle_id, 'promo' => $promo, 'booking_mode' => 'one_time'])];
         }
@@ -425,6 +446,12 @@ class DriverController extends BaseController
                 ];
             }
 
+            $cost = self::calculateBookingCost($spot, $pdo, $promo, $loyalty_discount, $start, $end, 0);
+            if (($cost['promo_error'] ?? '') !== '') {
+                $pdo->rollBack();
+                return ['error' => $cost['promo_error'], 'preview' => null];
+            }
+
             $buffer_end = date('Y-m-d H:i:s', strtotime($end) + $bufferMins * 60);
             $qr_token = bin2hex(random_bytes(16));
             $transaction_id = 'CC' . time() . rand(1000, 9999);
@@ -455,8 +482,36 @@ class DriverController extends BaseController
         }
     }
 
-    private static function calculateBookingCost(array $spot, PDO $pdo, string $promo_code, int $loyalty_discount, string $start, string $end, float $extraDiscountPercent = 0): array
+    /**
+     * @param list<array{start:string,end:string}> $slots
+     */
+    private static function latestReservationEndAmongSlots(array $slots): string
     {
+        $bestEnd = '';
+        $bestTs = 0;
+        foreach ($slots as $s) {
+            $ts = strtotime($s['end'] ?? '');
+            if ($ts !== false && $ts >= $bestTs) {
+                $bestTs = $ts;
+                $bestEnd = (string)$s['end'];
+            }
+        }
+        return $bestEnd !== '' ? $bestEnd : (string)($slots[0]['end'] ?? '');
+    }
+
+    /**
+     * @param ?string $promoBookingWindowEnd latest datetime in the booked window — promo expiry must stay >= this
+     */
+    private static function calculateBookingCost(
+        array $spot,
+        PDO $pdo,
+        string $promo_code,
+        int $loyalty_discount,
+        string $start,
+        string $end,
+        float $extraDiscountPercent = 0,
+        ?string $promoBookingWindowEnd = null
+    ): array {
         $hours = max(0.5, (strtotime($end) - strtotime($start)) / 3600);
         $mult = $spot['default_multiplier'] ?? 1.0;
         $baseBeforePeak = round($spot['base_rate'] * $mult * $hours, 2);
@@ -464,12 +519,17 @@ class DriverController extends BaseController
         $base = $peakData['final_price'];
         $vat_rate = $spot['vat_rate'] ?? 0.14;
         $discount = 0;
-        if ($promo_code) {
-            $pc = $pdo->prepare('SELECT * FROM promo_codes WHERE code=? AND expiry_date > NOW() AND (usage_limit=0 OR usage_count < usage_limit)');
-            $pc->execute([$promo_code]);
-            $pc = $pc->fetch();
-            if ($pc) {
-                $discount = $pc['discount_type'] === 'percentage' ? round($base * $pc['discount_value'] / 100, 2) : min((float)$pc['discount_value'], $base);
+        $promoBookingWindowEnd = ($promoBookingWindowEnd ?? '') !== '' ? $promoBookingWindowEnd : $end;
+
+        $promo_error = '';
+        if ($promo_code !== '') {
+            $pc = PromotionalCodeValidator::getRowForBookingWindow($pdo, $promo_code, $promoBookingWindowEnd);
+            if ($pc === null) {
+                $promo_error = PromotionalCodeValidator::promoInvalidBookingMessage();
+            } else {
+                $discount = $pc['discount_type'] === 'percentage'
+                    ? round($base * (float)$pc['discount_value'] / 100, 2)
+                    : min((float)$pc['discount_value'], $base);
             }
         }
         $loyalty_disc = round($base * $loyalty_discount / 100, 2);
@@ -487,6 +547,7 @@ class DriverController extends BaseController
             'peak_multiplier' => $peakData['multiplier'],
             'peak_applied' => $peakData['is_peak'],
             'peak_reason' => $peakData['reason'],
+            'promo_error' => $promo_error,
         ]);
     }
 
@@ -503,6 +564,10 @@ class DriverController extends BaseController
         string $promo
     ): array {
         $sub_discount = 15.0; // Assumption: commuter plan gets fixed 15% discount.
+
+        if (($spot['spot_approval_status'] ?? SpotApprovalModel::STATUS_APPROVED) !== SpotApprovalModel::STATUS_APPROVED) {
+            return ['error' => 'This parking spot has not been approved by an admin yet.', 'preview' => null];
+        }
 
         // Subscription must not mixed with one-time datetime fields (POST tampering defense).
         $mixedOneTimeErr = ParkingBookingValidator::subscriptionRejectOneTimeFieldsPresent($post['start_time'] ?? null, $post['end_time'] ?? null);
@@ -599,7 +664,11 @@ class DriverController extends BaseController
             }
         }
 
-        $firstCost = self::calculateBookingCost($spot, $pdo, $promo, $loyalty_discount, $slots[0]['start'], $slots[0]['end'], $sub_discount);
+        $latestBookingEnd = self::latestReservationEndAmongSlots($slots);
+        $firstCost = self::calculateBookingCost($spot, $pdo, $promo, $loyalty_discount, $slots[0]['start'], $slots[0]['end'], $sub_discount, $latestBookingEnd);
+        if (($firstCost['promo_error'] ?? '') !== '') {
+            return ['error' => $firstCost['promo_error'], 'preview' => null];
+        }
         $preview = array_merge($firstCost, [
             'booking_mode' => 'subscription',
             'subscription_discount_percent' => $sub_discount,
@@ -644,7 +713,11 @@ class DriverController extends BaseController
                     ];
                 }
 
-                $cost = self::calculateBookingCost($spot, $pdo, $promo, $loyalty_discount, $slot['start'], $slot['end'], $sub_discount);
+                $cost = self::calculateBookingCost($spot, $pdo, $promo, $loyalty_discount, $slot['start'], $slot['end'], $sub_discount, $latestBookingEnd);
+                if (($cost['promo_error'] ?? '') !== '') {
+                    $pdo->rollBack();
+                    return ['error' => $cost['promo_error'], 'preview' => null];
+                }
                 $transaction_id = 'SUB' . time() . rand(1000, 9999);
                 $p = $pdo->prepare('INSERT INTO payments (driver_id, amount, tax_amount, commission_amt, escrow_status, payment_status, penalty_buffer, final_amount, discount_applied, payment_method, token_ref, transaction_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)');
                 $p->execute([

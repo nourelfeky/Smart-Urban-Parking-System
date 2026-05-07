@@ -26,6 +26,11 @@
         <div class="sub">awaiting review</div>
     </div>
     <div class="stat-card">
+        <div class="label">Spot listings</div>
+        <div class="value" style="color:var(--amber)"><?= (int)($pending_spot_listings ?? 0) ?></div>
+        <div class="sub">pending document review</div>
+    </div>
+    <div class="stat-card">
         <div class="label">Total Revenue</div>
         <div class="value"><?= number_format($total_rev, 0) ?></div>
         <div class="sub">EGP (platform)</div>
@@ -42,6 +47,11 @@
         <div class="card-title">Owner Verifications</div>
         <p class="text-muted">Approve or reject space owner documents.</p>
         <span class="badge badge-blue"><?= $pending_ver ?> pending</span>
+    </a>
+    <a href="<?= htmlspecialchars(route_url('/admin/spot-approvals')) ?>" class="card" style="text-decoration:none">
+        <div class="card-title">Spot listing approvals</div>
+        <p class="text-muted">Review per-spot documents before drivers can book.</p>
+        <span class="badge badge-amber"><?= (int)($pending_spot_listings ?? 0) ?> pending</span>
     </a>
     <a href="<?= htmlspecialchars(route_url('/admin/zones')) ?>" class="card" style="text-decoration:none">
         <div class="card-title">Zone Management</div>

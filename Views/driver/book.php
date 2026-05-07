@@ -154,6 +154,9 @@ $waitlist_action_url = route_url('/driver/book?' . http_build_query($wl_q));
             <div class="form-group">
                 <label>Promo code</label>
                 <input type="text" name="promo_code" class="form-control" value="<?= htmlspecialchars($_POST['promo_code'] ?? '') ?>">
+                <small class="text-muted" style="display:block;margin-top:6px">
+                    Promo must stay valid through the end of your booking window (won’t expire mid-reservation).
+                </small>
             </div>
         </div>
 

@@ -2,6 +2,7 @@
 
 require_once __DIR__ . '/../Core/Database.php';
 require_once __DIR__ . '/ParkingBookingValidator.php';
+require_once __DIR__ . '/SpotApprovalModel.php';
 
 class BookingManager
 {
@@ -36,6 +37,8 @@ class BookingManager
         if (!$col->fetch()) {
             $this->pdo->exec('ALTER TABLE reservations ADD COLUMN subscription_id INT NULL AFTER payment_id');
         }
+
+        (new SpotApprovalModel($this->pdo))->ensureSchema();
     }
 
     public function getBufferMinutes(array $spot): int
@@ -340,6 +343,7 @@ class BookingManager
              FROM parking_spots ps
              LEFT JOIN zones z ON z.zone_id = ps.zone_id
              WHERE ps.status = "available"
+               AND ' . SpotApprovalModel::isApprovedSql('ps') . '
                AND ps.spot_id != ?
                AND (z.status = "active" OR ps.zone_id IS NULL)
              LIMIT ' . max(10, min(200, $maxRows))
@@ -363,6 +367,7 @@ class BookingManager
              LEFT JOIN zones z ON z.zone_id = ps.zone_id
              LEFT JOIN buffer_manager bm ON bm.spot_id = ps.spot_id
              WHERE ps.status = "available"
+               AND ' . SpotApprovalModel::isApprovedSql('ps') . '
                AND ps.spot_id != ?
                AND (z.status = "active" OR ps.zone_id IS NULL)
              LIMIT ' . max(10, min(200, $maxRows))

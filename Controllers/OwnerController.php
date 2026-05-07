@@ -7,6 +7,7 @@ require_once __DIR__ . '/../Models/ParkingBookingValidator.php';
 require_once __DIR__ . '/../Models/OwnerReportModel.php';
 require_once __DIR__ . '/../Models/WaitlistModel.php';
 require_once __DIR__ . '/../Models/ReviewModel.php';
+require_once __DIR__ . '/../Models/SpotApprovalModel.php';
 
 class OwnerController extends BaseController
 {
@@ -153,6 +154,7 @@ class OwnerController extends BaseController
         $pdo = Database::getConnection();
         $u = current_user();
         $uid = $u['id'];
+        new SpotApprovalModel($pdo);
 
         if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $act = $_POST['action'] ?? '';
@@ -185,19 +187,63 @@ class OwnerController extends BaseController
                     } else {
                         [$lat, $lng] = self::geocodeAddress($address);
                     }
-                    $stmt = $pdo->prepare('INSERT INTO parking_spots (owner_id, address, latitude, longitude, base_rate, height_cm, width_cm, has_ev_charger, availability_start, availability_end) VALUES (?,?,?,?,?,?,?,?,?,?)');
-                    $stmt->execute([$uid, $address, $lat, $lng, $rate, $height ?: null, $width ?: null, $ev, $avs, $ave]);
+                    $stmt = $pdo->prepare('INSERT INTO parking_spots (owner_id, address, latitude, longitude, base_rate, height_cm, width_cm, has_ev_charger, availability_start, availability_end, status, spot_approval_status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)');
+                    $stmt->execute([$uid, $address, $lat, $lng, $rate, $height ?: null, $width ?: null, $ev, $avs, $ave, 'reserved', SpotApprovalModel::STATUS_PENDING_DOCS]);
                     $sid = $pdo->lastInsertId();
                     $pdo->prepare('INSERT INTO pricing_engine (spot_id) VALUES (?)')->execute([$sid]);
                     $pdo->prepare('INSERT INTO buffer_manager (spot_id) VALUES (?)')->execute([$sid]);
-                    if ($lat && $lng) {
-                        flash('ok', 'Spot added and pinned on the map.');
+                    flash('ok', 'Spot created. Upload proof documents below — it will go live after admin approval.');
+                }
+            } elseif ($act === 'submit_spot_documents') {
+                $sid = (int)($_POST['spot_id'] ?? 0);
+                $own = $pdo->prepare('SELECT spot_id, spot_approval_status FROM parking_spots WHERE spot_id=? AND owner_id=?');
+                $own->execute([$sid, $uid]);
+                $row = $own->fetch();
+                if (!$row) {
+                    flash('err', 'Invalid spot.');
+                } elseif ($row['spot_approval_status'] === SpotApprovalModel::STATUS_PENDING_REVIEW) {
+                    flash('err', 'This spot is already waiting for admin review.');
+                } elseif ($row['spot_approval_status'] === SpotApprovalModel::STATUS_APPROVED) {
+                    flash('err', 'This spot is already approved.');
+                } else {
+                    $upload_dir = dirname(__DIR__, 1) . '/uploads/spot_docs/';
+                    if (!is_dir($upload_dir)) {
+                        mkdir($upload_dir, 0777, true);
+                    }
+                    $paths = [];
+                    foreach (['lease_or_ownership', 'spot_photo'] as $field) {
+                        if (!isset($_FILES[$field]) || $_FILES[$field]['error'] !== UPLOAD_ERR_OK) {
+                            continue;
+                        }
+                        $ext = strtolower(pathinfo($_FILES[$field]['name'], PATHINFO_EXTENSION));
+                        if (!in_array($ext, ['jpg', 'jpeg', 'png', 'pdf'], true)) {
+                            continue;
+                        }
+                        $fname = $field . '_spot' . $sid . '_' . $uid . '_' . time() . '.' . $ext;
+                        if (move_uploaded_file($_FILES[$field]['tmp_name'], $upload_dir . $fname)) {
+                            $paths[] = $fname;
+                        }
+                    }
+                    if (count($paths) !== 2) {
+                        flash('err', 'Please upload both documents: lease/ownership proof and a spot photo (JPG, PNG, or PDF).');
                     } else {
-                        flash('ok', 'Spot added. (Could not auto-pin on map; no GPS found for this address.)');
+                        $pdo->prepare(
+                            'INSERT INTO spot_document_submissions (spot_id, owner_id, document_paths, review_status) VALUES (?,?,?,?)'
+                        )->execute([$sid, $uid, implode(',', $paths), 'pending']);
+                        $pdo->prepare('UPDATE parking_spots SET spot_approval_status=? WHERE spot_id=? AND owner_id=?')->execute([SpotApprovalModel::STATUS_PENDING_REVIEW, $sid, $uid]);
+                        flash('ok', 'Documents submitted. An admin will review your spot.');
                     }
                 }
+                redirect(route_url('/owner/spots'));
             } elseif ($act === 'toggle') {
                 $sid = (int)($_POST['spot_id'] ?? 0);
+                $chk = $pdo->prepare('SELECT spot_approval_status, status FROM parking_spots WHERE spot_id=? AND owner_id=?');
+                $chk->execute([$sid, $uid]);
+                $crow = $chk->fetch();
+                if (!$crow || $crow['spot_approval_status'] !== SpotApprovalModel::STATUS_APPROVED) {
+                    flash('err', 'You can only change availability after admin approves this spot.');
+                    redirect(route_url('/owner/spots'));
+                }
                 $status = $_POST['new_status'] ?? 'available';
                 $active = $pdo->prepare('SELECT COUNT(*) FROM reservations WHERE spot_id=? AND status IN ("confirmed","active")');
                 $active->execute([$sid]);
@@ -228,8 +274,22 @@ class OwnerController extends BaseController
         $spotsStmt->execute([$uid]);
         $spots = $spotsStmt->fetchAll();
 
+        $latestSub = [];
+        if ($spots !== []) {
+            $ids = array_values(array_unique(array_map(static fn($s) => (int)$s['spot_id'], $spots)));
+            $in = implode(',', $ids);
+            $subStmt = $pdo->query("SELECT * FROM spot_document_submissions WHERE spot_id IN ($in) ORDER BY submission_id DESC");
+            foreach ($subStmt->fetchAll() as $sr) {
+                $spid = (int)$sr['spot_id'];
+                if (!isset($latestSub[$spid])) {
+                    $latestSub[$spid] = $sr;
+                }
+            }
+        }
+
         self::render('owner/spots', [
             'spots' => $spots,
+            'latestSub' => $latestSub,
             'pageTitle' => 'My Spots',
         ]);
     }

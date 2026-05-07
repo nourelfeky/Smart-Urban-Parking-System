@@ -5,6 +5,11 @@
 
 <h1 class="page-title">My Parking Spots</h1>
 
+<div class="alert alert-info mb-3">
+    <strong>New requirement:</strong> after you create a spot, upload <strong>lease/ownership proof</strong> and a <strong>spot photo</strong>.
+    An <strong>admin must approve</strong> the listing before drivers can search or book it.
+</div>
+
 <div class="card mb-3">
     <div class="card-title">List a New Spot</div>
     <form method="post">
@@ -65,17 +70,30 @@
 <div class="card">
     <div class="table-wrap">
         <table>
-            <thead><tr><th>Address</th><th>Rate</th><th>Status</th><th>EV</th><th>Hours</th><th>Location</th><th>Actions</th></tr></thead>
+            <thead><tr><th>Address</th><th>Rate</th><th>Listing approval</th><th>Operational</th><th>EV</th><th>Hours</th><th>Location</th><th>Actions</th></tr></thead>
             <tbody>
+            <?php
+            /** @var array<int,array<string,mixed>> $latestSub */
+            $latestSub = $latestSub ?? [];
+            ?>
             <?php foreach ($spots as $s): ?>
+            <?php
+                $ap = $s['spot_approval_status'] ?? 'approved';
+                $apBadge = ['pending_documents'=>'badge-amber','pending_review'=>'badge-blue','approved'=>'badge-green','rejected'=>'badge-red'];
+                $apLabel = ['pending_documents'=>'Docs required','pending_review'=>'Awaiting admin','approved'=>'Approved','rejected'=>'Rejected'];
+                $op = ['available'=>'badge-green','occupied'=>'badge-amber','reserved'=>'badge-blue','maintenance'=>'badge-gray','owner_use'=>'badge-gray','locked'=>'badge-red'];
+            ?>
             <tr>
                 <td><?= htmlspecialchars($s['address']) ?></td>
                 <td><?= number_format($s['base_rate'],2) ?> EGP</td>
                 <td>
-                    <?php
-                    $sc = ['available'=>'badge-green','occupied'=>'badge-amber','reserved'=>'badge-blue','maintenance'=>'badge-gray','owner_use'=>'badge-gray','locked'=>'badge-red'];
-                    echo '<span class="badge ' . ($sc[$s['status']] ?? 'badge-gray') . '">' . $s['status'] . '</span>';
-                    ?>
+                    <span class="badge <?= $apBadge[$ap] ?? 'badge-gray' ?>"><?= htmlspecialchars($apLabel[$ap] ?? $ap) ?></span>
+                    <?php if ($ap === 'rejected' && !empty($latestSub[(int)$s['spot_id']]['admin_note'])): ?>
+                        <div class="text-muted" style="font-size:12px;margin-top:4px">Note: <?= htmlspecialchars((string)$latestSub[(int)$s['spot_id']]['admin_note']) ?></div>
+                    <?php endif; ?>
+                </td>
+                <td>
+                    <span class="badge <?= $op[$s['status']] ?? 'badge-gray' ?>"><?= htmlspecialchars($s['status']) ?></span>
                 </td>
                 <td><?= $s['has_ev_charger'] ? '<span class="badge badge-green">⚡</span>' : '—' ?></td>
                 <td><?= substr($s['availability_start'],0,5) ?> – <?= substr($s['availability_end'],0,5) ?></td>
@@ -95,7 +113,9 @@
                     <?php endif; ?>
                 </td>
                 <td class="flex gap-2" style="flex-wrap:wrap">
-                    <?php if ($s['status'] === 'available'): ?>
+                    <?php if ($ap !== 'approved'): ?>
+                        <span class="text-muted" style="font-size:13px">Availability controls unlock after approval.</span>
+                    <?php elseif ($s['status'] === 'available'): ?>
                     <form method="post" style="display:inline">
                         <input type="hidden" name="action" value="toggle">
                         <input type="hidden" name="spot_id" value="<?= $s['spot_id'] ?>">
@@ -108,7 +128,7 @@
                         <input type="hidden" name="new_status" value="owner_use">
                         <button class="btn btn-outline btn-sm">Owner Use</button>
                     </form>
-                    <?php elseif (in_array($s['status'], ['maintenance','owner_use'])): ?>
+                    <?php elseif (in_array($s['status'], ['maintenance','owner_use','reserved'])): ?>
                     <form method="post" style="display:inline">
                         <input type="hidden" name="action" value="toggle">
                         <input type="hidden" name="spot_id" value="<?= $s['spot_id'] ?>">
@@ -123,6 +143,25 @@
                     </form>
                 </td>
             </tr>
+            <?php if (in_array($ap, ['pending_documents', 'rejected'], true)): ?>
+            <tr>
+                <td colspan="8" style="background:var(--gray-50);padding:16px 14px;">
+                    <form method="post" enctype="multipart/form-data" class="flex gap-3" style="flex-wrap:wrap;align-items:flex-end">
+                        <input type="hidden" name="action" value="submit_spot_documents">
+                        <input type="hidden" name="spot_id" value="<?= (int)$s['spot_id'] ?>">
+                        <div class="form-group" style="margin-bottom:0">
+                            <label style="display:block;margin-bottom:4px;font-size:12px;font-weight:600">Lease / ownership proof</label>
+                            <input type="file" name="lease_or_ownership" accept=".jpg,.jpeg,.png,.pdf" class="form-control" required style="padding:8px">
+                        </div>
+                        <div class="form-group" style="margin-bottom:0">
+                            <label style="display:block;margin-bottom:4px;font-size:12px;font-weight:600">Spot photo</label>
+                            <input type="file" name="spot_photo" accept=".jpg,.jpeg,.png,.pdf" class="form-control" required style="padding:8px">
+                        </div>
+                        <button type="submit" class="btn btn-primary btn-sm">Submit for review</button>
+                    </form>
+                </td>
+            </tr>
+            <?php endif; ?>
             <?php endforeach; ?>
             </tbody>
         </table>

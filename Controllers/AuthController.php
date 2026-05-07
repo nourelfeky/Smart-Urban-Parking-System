@@ -3,6 +3,7 @@
 require_once __DIR__ . '/../Core/Database.php';
 require_once __DIR__ . '/../Core/Session.php';
 require_once __DIR__ . '/../Models/User.php';
+require_once __DIR__ . '/../Models/PromotionalCodeValidator.php';
 require_once __DIR__ . '/BaseController.php';
 
 class AuthController extends BaseController
@@ -124,6 +125,8 @@ class AuthController extends BaseController
             if ($role === 'driver') {
                 $pdo->prepare('INSERT INTO drivers (driver_id) VALUES (?)')->execute([$userId]);
                 $pdo->prepare('INSERT INTO loyalty_accounts (driver_id) VALUES (?)')->execute([$userId]);
+                PromotionalCodeValidator::ensureDefaultPromotionalCodes($pdo);
+                PromotionalCodeValidator::notifyNewDriverWelcomePromo($pdo, (int)$userId);
             } elseif ($role === 'owner') {
                 $pdo->prepare('INSERT INTO space_owners (owner_id) VALUES (?)')->execute([$userId]);
             }

@@ -33,6 +33,7 @@ if ($role === 'driver') {
         route_url('/admin/appeals') => 'Appeals',
         route_url('/admin/zones') => 'Zones',
         route_url('/admin/owners') => 'Owners',
+        route_url('/admin/spot-approvals') => 'Spot approvals',
         route_url('/admin/heatmap') => 'Heatmap',
     ];
 } elseif ($role === 'officer') {
