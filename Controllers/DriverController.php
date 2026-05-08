@@ -5,13 +5,18 @@ require_once __DIR__ . '/../Core/Database.php';
 require_once __DIR__ . '/../Core/Auth.php';
 require_once __DIR__ . '/../Models/BookingManager.php';
 require_once __DIR__ . '/../Models/ParkingBookingValidator.php';
-require_once __DIR__ . '/../Models/PricingModel.php';
 require_once __DIR__ . '/../Models/PaymentModel.php';
 require_once __DIR__ . '/../Models/PenaltyModel.php';
 require_once __DIR__ . '/../Models/WaitlistModel.php';
 require_once __DIR__ . '/../Models/ReviewModel.php';
 require_once __DIR__ . '/../Models/SpotApprovalModel.php';
 require_once __DIR__ . '/../Models/PromotionalCodeValidator.php';
+require_once __DIR__ . '/../Models/ReservationSubject.php';
+require_once __DIR__ . '/../Models/ReservationEvent.php';
+require_once __DIR__ . '/../Models/PaymentMethodStrategy.php';
+require_once __DIR__ . '/../Models/PricingEngine.php';
+require_once __DIR__ . '/../Models/TaxEngine.php';
+require_once __DIR__ . '/../Models/ParkingSystemConfig.php';
 
 class DriverController extends BaseController
 {
@@ -565,13 +570,13 @@ class DriverController extends BaseController
 
             $buffer_end = date('Y-m-d H:i:s', strtotime($end) + $bufferMins * 60);
             $qr_token = bin2hex(random_bytes(16));
-            $transaction_id = 'CC' . time() . rand(1000, 9999);
-            $commissionAmt = round($cost['total'] * 0.15, 2);
-            $p = $pdo->prepare('INSERT INTO payments (driver_id, amount, tax_amount, commission_amt, escrow_status, payment_status, penalty_buffer, final_amount, discount_applied, payment_method, token_ref, transaction_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)');
-            $p->execute([
-                $uid, $cost['base'], $cost['tax'], $commissionAmt, 'held', 'pending', round($cost['escrow'] - $cost['total'], 2), $cost['total'], $cost['discount'], 'credit_card', 'CARD-****' . substr($card_number, -4), $transaction_id
-            ]);
-            $pay_id = $pdo->lastInsertId();
+            $pay_id = PaymentProcessingService::insertHeldPayment(
+                $pdo,
+                new CreditCardPaymentStrategy(),
+                $uid,
+                $cost,
+                ['card_number' => $card_number]
+            );
 
             $r = $pdo->prepare('INSERT INTO reservations (driver_id, spot_id, vehicle_id, payment_id, start_time, end_time, buffer_end_time, status, qr_code_token, base_cost, tax_amount, discount_amount, final_cost, escrow_amount, promo_code, buffer_applied, grace_period_mins) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
             $r->execute([$uid, $spot['spot_id'], $vehicle_id ?: null, $pay_id, $start, $end, $buffer_end, 'confirmed', $qr_token, $cost['base'], $cost['tax'], $cost['discount'], $cost['total'], $cost['escrow'], $promo ?: null, 1, 5]);
@@ -586,9 +591,19 @@ class DriverController extends BaseController
             self::refreshLoyaltyRolling($pdo, $uid);
 
             // Update platform commission aggregator for this successful booking.
+            $commissionAmt = round($cost['total'] * 0.15, 2);
             $pdo->prepare('UPDATE platform_account SET total_commission = total_commission + ?')->execute([$commissionAmt]);
-            $pdo->prepare('INSERT INTO notifications (recipient_id, channel, message, type, status) VALUES (?,?,?,?,?)')->execute([$uid, 'in_app', "Booking confirmed for {$spot['address']} on " . date('d M, H:i', strtotime($start)), 'booking', 'sent']);
-            $pdo->prepare('INSERT INTO notifications (recipient_id, channel, message, type, status) VALUES (?,?,?,?,?)')->execute([$spot['owner_id'], 'in_app', "New booking received for your spot at {$spot['address']}.", 'booking', 'sent']);
+            ReservationSubject::getInstance()->notifyObservers(
+                ReservationEvent::bookingCreated(
+                    $pdo,
+                    $uid,
+                    (int)$spot['owner_id'],
+                    (int)$spot['spot_id'],
+                    (string)$spot['address'],
+                    $start,
+                    (int)$res_id
+                )
+            );
             $pdo->prepare('INSERT INTO audit_log (event_type, entity_id, actor_id, spot_id, new_state) VALUES (?,?,?,?,?)')->execute(['RESERVATION_CREATED', $res_id, $uid, $spot['spot_id'], 'confirmed']);
             $pdo->commit();
             flash('ok', 'Booking confirmed! Your QR token: ' . $qr_token);
@@ -631,10 +646,11 @@ class DriverController extends BaseController
     ): array {
         $hours = max(0.5, (strtotime($end) - strtotime($start)) / 3600);
         $mult = $spot['default_multiplier'] ?? 1.0;
-        $baseBeforePeak = round($spot['base_rate'] * $mult * $hours, 2);
-        $peakData = (new PricingModel())->calculatePeakPrice((float)$baseBeforePeak, $start);
+        $pricingEngine = new PricingEngine();
+        $baseBeforePeak = $pricingEngine->calculatePrice($hours, (float)$spot['base_rate'] * (float)$mult);
+        $peakData = $pricingEngine->calculatePriceWithPeak((float)$baseBeforePeak, $start);
         $base = $peakData['final_price'];
-        $vat_rate = $spot['vat_rate'] ?? 0.14;
+        $vat_rate = (float)($spot['vat_rate'] ?? ParkingSystemConfig::getInstance()->taxRate);
         $discount = 0;
         $promoBookingWindowEnd = ($promoBookingWindowEnd ?? '') !== '' ? $promoBookingWindowEnd : $end;
 
@@ -655,7 +671,7 @@ class DriverController extends BaseController
             $discount = max($discount, round($base * $extraDiscountPercent / 100, 2));
         }
         $taxable = max(0, $base - $discount);
-        $tax = round($taxable * $vat_rate, 2);
+        $tax = (new TaxEngine())->calculateTax($taxable, $vat_rate);
         $total = $taxable + $tax;
         $escrow = round($total * 1.15, 2);
         return array_merge(compact('base', 'discount', 'tax', 'total', 'escrow', 'hours'), [
@@ -853,13 +869,14 @@ class DriverController extends BaseController
                     $pdo->rollBack();
                     return ['error' => $cost['promo_error'], 'preview' => null];
                 }
-                $transaction_id = 'SUB' . time() . rand(1000, 9999);
                 $commissionAmt = round($cost['total'] * 0.15, 2);
-                $p = $pdo->prepare('INSERT INTO payments (driver_id, amount, tax_amount, commission_amt, escrow_status, payment_status, penalty_buffer, final_amount, discount_applied, payment_method, token_ref, transaction_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)');
-                $p->execute([
-                    $uid, $cost['base'], $cost['tax'], $commissionAmt, 'held', 'pending', round($cost['escrow'] - $cost['total'], 2), $cost['total'], $cost['discount'], 'subscription', 'SUBSCRIPTION', $transaction_id
-                ]);
-                $pay_id = $pdo->lastInsertId();
+                $pay_id = PaymentProcessingService::insertHeldPayment(
+                    $pdo,
+                    new SubscriptionPaymentStrategy(),
+                    $uid,
+                    $cost,
+                    []
+                );
                 $buffer_end = date('Y-m-d H:i:s', strtotime($slot['end']) + $subBuffer * 60);
                 $qr_token = bin2hex(random_bytes(16));
                 $r = $pdo->prepare('INSERT INTO reservations (driver_id, spot_id, vehicle_id, payment_id, subscription_id, start_time, end_time, buffer_end_time, status, qr_code_token, base_cost, tax_amount, discount_amount, final_cost, escrow_amount, promo_code, buffer_applied, grace_period_mins) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
@@ -883,12 +900,15 @@ class DriverController extends BaseController
             }
 
             $addr = (string)($spot['address'] ?? 'the selected spot');
-            $pdo->prepare('INSERT INTO notifications (recipient_id, channel, message, type, status) VALUES (?,?,?,?,?)')
-                ->execute([$uid, 'in_app', "Subscription created for {$addr}. Recurring reservations were generated.", 'booking', 'sent']);
-            if (!empty($spot['owner_id'])) {
-                $pdo->prepare('INSERT INTO notifications (recipient_id, channel, message, type, status) VALUES (?,?,?,?,?)')
-                    ->execute([(int)$spot['owner_id'], 'in_app', "New subscription bookings were created for your spot at {$addr}.", 'booking', 'sent']);
-            }
+            ReservationSubject::getInstance()->notifyObservers(
+                ReservationEvent::subscriptionCreated(
+                    $pdo,
+                    $uid,
+                    (int)($spot['owner_id'] ?? 0),
+                    (int)$spot['spot_id'],
+                    $addr
+                )
+            );
 
             flash('ok', 'Subscription created. Recurring reservations were generated successfully.');
             redirect(route_url('/driver/bookings?tab=bookings&status=confirmed'));
@@ -1114,15 +1134,7 @@ class DriverController extends BaseController
                 $penalty = (float)($penaltyBreakdown['penalty_amount'] ?? 0.0);
                 $updatedTotal = (float)$r['final_cost'] + $penalty;
                 $pdo->prepare("UPDATE reservations SET status='completed', check_out_time=?, overstay_minutes=?, penalty_amount=?, final_cost=? WHERE reservation_id=?")->execute([$now, $overstay, $penalty, $updatedTotal, $id]);
-                // Only mark the spot as available if no other confirmed/active reservations exist.
-                $otherActive = $pdo->prepare('SELECT COUNT(*) FROM reservations WHERE spot_id=? AND reservation_id<>? AND status IN ("confirmed","active")');
-                $otherActive->execute([$r['spot_id'], $id]);
-                if ((int)$otherActive->fetchColumn() === 0) {
-                    $pdo->prepare("UPDATE parking_spots SET status='available' WHERE spot_id=?")->execute([$r['spot_id']]);
-                } else {
-                    $pdo->prepare("UPDATE parking_spots SET status='reserved' WHERE spot_id=?")->execute([$r['spot_id']]);
-                }
-                (new WaitlistModel($pdo))->notifySpotAvailable((int)$r['spot_id']);
+                ReservationSubject::getInstance()->notifyObservers(ReservationEvent::bookingCompleted($pdo, $uid, $r));
                 $pdo->prepare("UPDATE parking_sessions SET end_time=?, status=?, duration_mins=? WHERE reservation_id=?")->execute([$now, $overstay > 0 ? 'overstay' : 'completed', (int)((strtotime($now) - strtotime($r['check_in_time'])) / 60), $id]);
                 $pdo->prepare("UPDATE payments SET final_amount = final_amount + ? WHERE payment_id=?")->execute([$penalty, $r['payment_id']]);
                 (new PaymentModel($pdo))->releaseFunds($id);
@@ -1240,32 +1252,7 @@ class DriverController extends BaseController
                     $pdo->prepare('UPDATE space_owners SET earnings_balance = GREATEST(0, earnings_balance - ?) WHERE owner_id=?')
                         ->execute([$refundedOwnerShare, $r['owner_id']]);
                 }
-                // Only mark the spot as available if no other confirmed/active reservations exist.
-                $otherActive = $pdo->prepare('SELECT COUNT(*) FROM reservations WHERE spot_id=? AND reservation_id<>? AND status IN ("confirmed","active")');
-                $otherActive->execute([$r['spot_id'], $id]);
-                if ((int)$otherActive->fetchColumn() === 0) {
-                    $pdo->prepare("UPDATE parking_spots SET status='available' WHERE spot_id=?")->execute([$r['spot_id']]);
-                } else {
-                    $pdo->prepare("UPDATE parking_spots SET status='reserved' WHERE spot_id=?")->execute([$r['spot_id']]);
-                }
-                $wait = $pdo->prepare('SELECT driver_id FROM waitlist WHERE spot_id=? ORDER BY joined_at ASC LIMIT 1');
-                $wait->execute([$r['spot_id']]);
-                $wdriver = $wait->fetch();
-                if ($wdriver) {
-                    $pdo->prepare('INSERT INTO notifications (recipient_id, channel, message, type, status) VALUES (?,?,?,?,?)')->execute([$wdriver['driver_id'], 'in_app', "A spot you're watching at {$r['address']} just became available!", 'waitlist', 'sent']);
-                }
-                // Nearby alternative recommendations when a reservation becomes unavailable/cancelled.
-                $spotRef = ['spot_id' => $r['spot_id'], 'latitude' => $r['latitude'], 'longitude' => $r['longitude']];
-                $bookingManager = new BookingManager($pdo);
-                $alternatives = $bookingManager->getAlternativeSpots($spotRef, 3);
-                if (!empty($alternatives)) {
-                    $lines = array_map(
-                        static fn(array $alt): string => $alt['address'] . ' (' . number_format((float)$alt['distance_km'], 2) . ' km)',
-                        $alternatives
-                    );
-                    $pdo->prepare('INSERT INTO notifications (recipient_id, channel, message, type, status) VALUES (?,?,?,?,?)')
-                        ->execute([$uid, 'in_app', 'Suggested nearby alternatives: ' . implode(' | ', $lines), 'booking', 'sent']);
-                }
+                ReservationSubject::getInstance()->notifyObservers(ReservationEvent::bookingCancelled($pdo, $uid, $r, $refund));
                 flash('ok', "Booking cancelled. Refund: {$refund}%.");
                 redirect(route_url('/driver/bookings'));
             }
