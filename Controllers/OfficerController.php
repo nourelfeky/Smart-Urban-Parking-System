@@ -6,6 +6,9 @@ require_once __DIR__ . '/../Core/Auth.php';
 
 class OfficerController extends BaseController
 {
+    private const FINE_AMOUNT_MIN = 1.0;
+    private const FINE_AMOUNT_MAX = 10000.0;
+
     public static function dashboard(): void
     {
         require_role('officer');
@@ -33,18 +36,48 @@ class OfficerController extends BaseController
             $driver_id = (int)($_POST['driver_id'] ?? 0);
             $spot_id = (int)($_POST['spot_id'] ?? 0);
             $type = trim($_POST['vtype'] ?? 'unauthorized');
-            $penalty = (float)($_POST['penalty_amount'] ?? 50);
+            $allowedTypes = ['unauthorized', 'overstay'];
+            if (!in_array($type, $allowedTypes, true)) {
+                $type = 'unauthorized';
+            }
+            $penaltyRaw = trim((string)($_POST['penalty_amount'] ?? '50'));
+            $penalty = (float)$penaltyRaw;
             
-            if ($driver_id && $spot_id) {
+            $errs = [];
+            if (!$driver_id) {
+                $errs[] = 'Driver is required.';
+            }
+            if (!$spot_id) {
+                $errs[] = 'Spot is required.';
+            }
+            if ($penaltyRaw === '' || !is_numeric($penaltyRaw) || $penalty < self::FINE_AMOUNT_MIN || $penalty > self::FINE_AMOUNT_MAX) {
+                $errs[] = 'Penalty amount must be between ' . self::FINE_AMOUNT_MIN . ' and ' . self::FINE_AMOUNT_MAX . '.';
+            }
+
+            if ($errs === []) {
                 // Use 'fines' table
                 $pdo->prepare('INSERT INTO fines (driver_id, spot_id, type, penalty_amount, status) VALUES (?,?,?,?,?)')
                     ->execute([$driver_id, $spot_id, $type, $penalty, 'pending']);
                 
-                $pdo->prepare('UPDATE drivers SET unpaid_fines = unpaid_fines + 1 WHERE driver_id=?')->execute([$driver_id]);
+                // Mirror admin behavior: recompute pending fines and suspend/blacklist at 3+.
+                $unpaid = $pdo->prepare("SELECT COUNT(*) FROM fines WHERE driver_id=? AND status='pending'");
+                $unpaid->execute([$driver_id]);
+                $cnt = (int)$unpaid->fetchColumn();
+                if ($cnt >= 3) {
+                    $pdo->prepare('UPDATE drivers SET can_book=0, unpaid_fines=? WHERE driver_id=?')->execute([$cnt, $driver_id]);
+                    $bl = $pdo->prepare('SELECT COUNT(*) FROM blacklist WHERE driver_id=?');
+                    $bl->execute([$driver_id]);
+                    if (!(int)$bl->fetchColumn()) {
+                        $pdo->prepare('INSERT INTO blacklist (driver_id) VALUES (?)')->execute([$driver_id]);
+                    }
+                    $pdo->prepare('INSERT INTO notifications (recipient_id, channel, message, type, status) VALUES (?,?,?,?,?)')
+                        ->execute([$driver_id, 'in_app', 'Your account has been suspended due to 3+ unpaid fines.', 'suspension', 'sent']);
+                }
+                $pdo->prepare('UPDATE drivers SET unpaid_fines=? WHERE driver_id=?')->execute([$cnt, $driver_id]);
                 
                 flash('ok', 'Violation recorded.');
             } else {
-                flash('err', 'Driver and Spot are required.');
+                flash('err', implode(' ', $errs));
             }
             redirect(route_url('/officer/violation'));
         }

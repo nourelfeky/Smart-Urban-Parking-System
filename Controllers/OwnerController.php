@@ -11,6 +11,11 @@ require_once __DIR__ . '/../Models/SpotApprovalModel.php';
 
 class OwnerController extends BaseController
 {
+    private const DIMENSION_CM_MIN = 1.0;
+    private const DIMENSION_CM_MAX = 1000.0;
+    private const BASE_RATE_MIN = 1.0;
+    private const BASE_RATE_MAX = 10000.0;
+
     /**
      * Best-effort address geocoding using OpenStreetMap Nominatim.
      * Returns [lat, lng] or [null, null] if not found/failed.
@@ -144,9 +149,12 @@ class OwnerController extends BaseController
             $act = $_POST['action'] ?? '';
             if ($act === 'add') {
                 $address = trim($_POST['address'] ?? '');
-                $rate = (float)($_POST['base_rate'] ?? 0);
-                $height = (float)($_POST['height'] ?? 0);
-                $width = (float)($_POST['width'] ?? 0);
+                $rateRaw = trim((string)($_POST['base_rate'] ?? ''));
+                $heightRaw = trim((string)($_POST['height'] ?? ''));
+                $widthRaw = trim((string)($_POST['width'] ?? ''));
+                $rate = $rateRaw !== '' ? (float)$rateRaw : 0.0;
+                $height = $heightRaw !== '' ? (float)$heightRaw : null;
+                $width = $widthRaw !== '' ? (float)$widthRaw : null;
                 $ev = isset($_POST['ev']) ? 1 : 0;
                 $avs = $_POST['avail_start'] ?? '08:00';
                 $ave = $_POST['avail_end'] ?? '22:00';
@@ -162,9 +170,26 @@ class OwnerController extends BaseController
                     && $lngPost >= -180 && $lngPost <= 180;
 
                 $availErr = ParkingBookingValidator::validateOwnerDailyWindow($avs, $ave);
-                if ($address && $rate > 0 && $availErr !== null) {
-                    flash('err', $availErr);
-                } elseif ($address && $rate > 0) {
+                $errs = [];
+                if ($address === '') {
+                    $errs[] = 'Address is required.';
+                }
+                if (!is_numeric($rateRaw) || $rate < self::BASE_RATE_MIN || $rate > self::BASE_RATE_MAX) {
+                    $errs[] = 'Base rate must be between ' . self::BASE_RATE_MIN . ' and ' . self::BASE_RATE_MAX . '.';
+                }
+                if ($height !== null && ($height < self::DIMENSION_CM_MIN || $height > self::DIMENSION_CM_MAX)) {
+                    $errs[] = 'Spot height must be between ' . self::DIMENSION_CM_MIN . ' and ' . self::DIMENSION_CM_MAX . ' cm.';
+                }
+                if ($width !== null && ($width < self::DIMENSION_CM_MIN || $width > self::DIMENSION_CM_MAX)) {
+                    $errs[] = 'Spot width must be between ' . self::DIMENSION_CM_MIN . ' and ' . self::DIMENSION_CM_MAX . ' cm.';
+                }
+                if ($availErr !== null) {
+                    $errs[] = $availErr;
+                }
+
+                if ($errs !== []) {
+                    flash('err', implode(' ', $errs));
+                } else {
                     if ($pickedOk) {
                         $lat = $latPost;
                         $lng = $lngPost;
@@ -172,7 +197,7 @@ class OwnerController extends BaseController
                         [$lat, $lng] = self::geocodeAddress($address);
                     }
                     $stmt = $pdo->prepare('INSERT INTO parking_spots (owner_id, address, latitude, longitude, base_rate, height_cm, width_cm, has_ev_charger, availability_start, availability_end, status, spot_approval_status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)');
-                    $stmt->execute([$uid, $address, $lat, $lng, $rate, $height ?: null, $width ?: null, $ev, $avs, $ave, 'reserved', SpotApprovalModel::STATUS_PENDING_DOCS]);
+                    $stmt->execute([$uid, $address, $lat, $lng, $rate, $height, $width, $ev, $avs, $ave, 'reserved', SpotApprovalModel::STATUS_PENDING_DOCS]);
                     $sid = $pdo->lastInsertId();
                     $pdo->prepare('INSERT INTO pricing_engine (spot_id) VALUES (?)')->execute([$sid]);
                     $pdo->prepare('INSERT INTO buffer_manager (spot_id) VALUES (?)')->execute([$sid]);
@@ -215,6 +240,15 @@ class OwnerController extends BaseController
                             'INSERT INTO spot_document_submissions (spot_id, owner_id, document_paths, review_status) VALUES (?,?,?,?)'
                         )->execute([$sid, $uid, implode(',', $paths), 'pending']);
                         $pdo->prepare('UPDATE parking_spots SET spot_approval_status=? WHERE spot_id=? AND owner_id=?')->execute([SpotApprovalModel::STATUS_PENDING_REVIEW, $sid, $uid]);
+                        // Notify all admins that a spot listing is waiting for review.
+                        $adminIds = $pdo->query('SELECT id FROM users WHERE role="admin"')->fetchAll(PDO::FETCH_COLUMN);
+                        $addrStmt = $pdo->prepare('SELECT address FROM parking_spots WHERE spot_id=?');
+                        $addrStmt->execute([$sid]);
+                        $addr = (string)($addrStmt->fetchColumn() ?: 'a spot');
+                        foreach ($adminIds as $aid) {
+                            $pdo->prepare('INSERT INTO notifications (recipient_id, channel, message, type, status) VALUES (?,?,?,?,?)')
+                                ->execute([(int)$aid, 'in_app', "New spot listing documents submitted for review: {$addr}.", 'spot_listing', 'sent']);
+                        }
                         flash('ok', 'Documents submitted. An admin will review your spot.');
                     }
                 }
@@ -349,6 +383,13 @@ class OwnerController extends BaseController
             if (count($paths) === 2) {
                 $pdo->prepare('INSERT INTO document_repository (owner_id, document_paths, status) VALUES (?,?,?)')->execute([$uid, implode(',', $paths), 'pending']);
                 $pdo->prepare('UPDATE space_owners SET verification_status="pending" WHERE owner_id=?')->execute([$uid]);
+                // Notify all admins that an owner verification request is waiting for review.
+                $adminIds = $pdo->query('SELECT id FROM users WHERE role="admin"')->fetchAll(PDO::FETCH_COLUMN);
+                $ownerName = (string)($u['name'] ?? 'An owner');
+                foreach ($adminIds as $aid) {
+                    $pdo->prepare('INSERT INTO notifications (recipient_id, channel, message, type, status) VALUES (?,?,?,?,?)')
+                        ->execute([(int)$aid, 'in_app', "{$ownerName} submitted identity verification documents for review.", 'verification', 'sent']);
+                }
                 flash('ok', 'Documents submitted for review.');
             } else {
                 flash('err', 'Please upload both ID document and utility bill (JPG, PNG or PDF).');
@@ -368,6 +409,29 @@ class OwnerController extends BaseController
             'vst' => $vst,
             'docs' => $docs,
             'pageTitle' => 'Verification',
+        ]);
+    }
+
+    public static function notifications(): void
+    {
+        require_role('owner');
+        $pdo = Database::getConnection();
+        $u = current_user();
+        $uid = (int)$u['id'];
+
+        if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+            $pdo->prepare('UPDATE notifications SET is_read=1 WHERE recipient_id=?')->execute([$uid]);
+            flash('ok', 'All marked as read.');
+            redirect(route_url('/owner/notifications'));
+        }
+
+        $notifs = $pdo->prepare('SELECT * FROM notifications WHERE recipient_id=? ORDER BY created_at DESC LIMIT 50');
+        $notifs->execute([$uid]);
+        $notifs = $notifs->fetchAll();
+
+        self::render('owner/notifications', [
+            'notifs' => $notifs,
+            'pageTitle' => 'Notifications',
         ]);
     }
 }

@@ -121,9 +121,9 @@ $waitlist_entries = $waitlist_entries ?? [];
     <?php if (empty($subscriptions)): ?>
         <p class="text-muted">No active subscriptions yet.</p>
     <?php else: ?>
-        <div class="table-wrap">
+    <div class="table-wrap">
             <table>
-                <thead><tr><th>ID</th><th>Spot</th><th>Days</th><th>Time</th><th>Weeks</th><th>Discount</th><th>Status</th></tr></thead>
+            <thead><tr><th>ID</th><th>Spot</th><th>Days</th><th>Time</th><th>Weeks</th><th>Discount</th><th>Status</th><th></th></tr></thead>
                 <tbody>
                 <?php foreach ($subscriptions as $sub): ?>
                 <tr>
@@ -134,6 +134,16 @@ $waitlist_entries = $waitlist_entries ?? [];
                     <td><?= (int)$sub['weeks'] ?></td>
                     <td><?= number_format((float)$sub['discount_percent'], 2) ?>%</td>
                     <td><?= htmlspecialchars($sub['status']) ?></td>
+                    <td>
+                        <?php if (($sub['status'] ?? '') === 'active'): ?>
+                            <form method="post" action="<?= htmlspecialchars(route_url('/driver/subscriptions/cancel')) ?>" onsubmit="return confirm('Cancel this subscription and its future reservations?');" style="display:inline">
+                                <input type="hidden" name="subscription_id" value="<?= (int)$sub['subscription_id'] ?>">
+                                <button class="btn btn-outline btn-sm" type="submit">Cancel</button>
+                            </form>
+                        <?php else: ?>
+                            —
+                        <?php endif; ?>
+                    </td>
                 </tr>
                 <?php endforeach; ?>
                 </tbody>

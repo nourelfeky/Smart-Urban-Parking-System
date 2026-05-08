@@ -15,6 +15,11 @@ require_once __DIR__ . '/../Models/PromotionalCodeValidator.php';
 
 class DriverController extends BaseController
 {
+    private const DIMENSION_CM_MIN = 1.0;
+    private const DIMENSION_CM_MAX = 1000.0;
+    private const BOOKING_EXTENSION_MIN_MINS = 1;
+    private const BOOKING_EXTENSION_MAX_MINS = 12 * 60; // 12 hours
+
     public static function dashboard(): void
     {
         require_role('driver');
@@ -26,6 +31,9 @@ class DriverController extends BaseController
         PromotionalCodeValidator::ensureDefaultPromotionalCodes($pdo);
         PromotionalCodeValidator::maybeNotifyGoldTierPromo($pdo, $uid);
         new PaymentModel($pdo);
+
+        // Keep loyalty counters rolling (30 days) even if the user hasn't booked recently.
+        self::refreshLoyaltyRolling($pdo, $uid);
 
         $active_count = $pdo->prepare('SELECT COUNT(*) FROM reservations WHERE driver_id=? AND status IN ("confirmed","active")');
         $active_count->execute([$uid]);
@@ -51,19 +59,21 @@ class DriverController extends BaseController
             'SELECT cs.subscription_id, cs.days_of_week, cs.start_time_of_day, cs.end_time_of_day, cs.weeks, cs.discount_percent, cs.status, ps.address
              FROM commuter_subscriptions cs
              JOIN parking_spots ps ON ps.spot_id = cs.spot_id
-             WHERE cs.driver_id = ?
+             WHERE cs.driver_id = ? AND cs.status = "active"
              ORDER BY cs.created_at DESC
              LIMIT 5'
         );
         $subsStmt->execute([$uid]);
         $subscriptions = $subsStmt->fetchAll();
 
-        $driverInfo = $pdo->prepare('SELECT can_book FROM drivers WHERE driver_id=?');
+        $driverInfo = $pdo->prepare('SELECT can_book, account_status FROM drivers WHERE driver_id=?');
         $driverInfo->execute([$uid]);
         $dinfo = $driverInfo->fetch();
-        // Wallet and account status are not in the drivers table yet, provide defaults
+        // Wallet balance is not stored in DB yet (best-effort default).
         $dinfo['wallet_balance'] = 0.00;
-        $dinfo['account_status'] = 'active';
+        if (!isset($dinfo['account_status']) || !$dinfo['account_status']) {
+            $dinfo['account_status'] = 'active';
+        }
 
         self::render('driver/dashboard', [
             'u' => $u,
@@ -98,12 +108,22 @@ class DriverController extends BaseController
             $where[] = 'ps.has_ev_charger = 1';
         }
         if ($max_h !== '') {
-            $where[] = '(ps.height_cm IS NULL OR ps.height_cm >= ?)';
-            $params[] = (float)$max_h;
+            if (!is_numeric($max_h) || (float)$max_h <= 0) {
+                flash('err', 'Max height must be a positive number.');
+                $max_h = '';
+            } else {
+                $where[] = '(ps.height_cm IS NULL OR ps.height_cm >= ?)';
+                $params[] = (float)$max_h;
+            }
         }
         if ($max_w !== '') {
-            $where[] = '(ps.width_cm IS NULL OR ps.width_cm >= ?)';
-            $params[] = (float)$max_w;
+            if (!is_numeric($max_w) || (float)$max_w <= 0) {
+                flash('err', 'Max width must be a positive number.');
+                $max_w = '';
+            } else {
+                $where[] = '(ps.width_cm IS NULL OR ps.width_cm >= ?)';
+                $params[] = (float)$max_w;
+            }
         }
 
         $sql = 'SELECT ps.spot_id, ps.zone_id, ps.address, ps.base_rate, ps.has_ev_charger, ps.height_cm, ps.width_cm, ps.difficulty_label, pe.default_multiplier, COALESCE(AVG(dr.rating_value), 0) AS avg_rating, COUNT(DISTINCT dr.rating_id) AS rating_count, ps.latitude, ps.longitude FROM parking_spots ps LEFT JOIN pricing_engine pe ON pe.spot_id = ps.spot_id LEFT JOIN difficulty_ratings dr ON dr.spot_id = ps.spot_id LEFT JOIN zones z ON z.zone_id = ps.zone_id WHERE ' . implode(' AND ', $where) . ' GROUP BY ps.spot_id ORDER BY ps.base_rate ASC';
@@ -233,17 +253,24 @@ class DriverController extends BaseController
             unset($rec);
         }
 
-        $dinfoStmt = $pdo->prepare('SELECT can_book FROM drivers WHERE driver_id=?');
+        $dinfoStmt = $pdo->prepare('SELECT can_book, account_status FROM drivers WHERE driver_id=?');
         $dinfoStmt->execute([$uid]);
         $dinfo = $dinfoStmt->fetch();
+        if ($dinfo && (string)($dinfo['account_status'] ?? 'active') !== 'active') {
+            flash('err', 'Your driver account is not active. Booking is disabled.');
+            redirect(route_url('/driver/dashboard'));
+        }
         if ($dinfo && !$dinfo['can_book']) {
-            flash('err', 'Your account is suspended. Pay outstanding fines first.');
+            flash('err', 'Your account is suspended from making bookings due to unpaid fines.');
             redirect(route_url('/driver/dashboard'));
         }
 
         $vehiclesStmt = $pdo->prepare('SELECT * FROM vehicle_profiles WHERE owner_id=?');
         $vehiclesStmt->execute([$uid]);
         $vehicles = $vehiclesStmt->fetchAll();
+
+        // Keep loyalty counters rolling (30 days) even if the user hasn't booked recently.
+        self::refreshLoyaltyRolling($pdo, $uid);
 
         $loyaltyStmt = $pdo->prepare('SELECT booking_last_30_days FROM loyalty_accounts WHERE driver_id=?');
         $loyaltyStmt->execute([$uid]);
@@ -539,9 +566,10 @@ class DriverController extends BaseController
             $buffer_end = date('Y-m-d H:i:s', strtotime($end) + $bufferMins * 60);
             $qr_token = bin2hex(random_bytes(16));
             $transaction_id = 'CC' . time() . rand(1000, 9999);
+            $commissionAmt = round($cost['total'] * 0.15, 2);
             $p = $pdo->prepare('INSERT INTO payments (driver_id, amount, tax_amount, commission_amt, escrow_status, payment_status, penalty_buffer, final_amount, discount_applied, payment_method, token_ref, transaction_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)');
             $p->execute([
-                $uid, $cost['base'], $cost['tax'], round($cost['total'] * 0.15, 2), 'held', 'pending', round($cost['escrow'] - $cost['total'], 2), $cost['total'], $cost['discount'], 'credit_card', 'CARD-****' . substr($card_number, -4), $transaction_id
+                $uid, $cost['base'], $cost['tax'], $commissionAmt, 'held', 'pending', round($cost['escrow'] - $cost['total'], 2), $cost['total'], $cost['discount'], 'credit_card', 'CARD-****' . substr($card_number, -4), $transaction_id
             ]);
             $pay_id = $pdo->lastInsertId();
 
@@ -553,7 +581,12 @@ class DriverController extends BaseController
             if ($promo) {
                 $pdo->prepare('UPDATE promo_codes SET usage_count = usage_count + 1 WHERE code=?')->execute([$promo]);
             }
-            $pdo->prepare('UPDATE loyalty_accounts SET booking_last_30_days = booking_last_30_days + 1, total_points = total_points + ? WHERE driver_id=?')->execute([$cost['total'] * 0.1, $uid]);
+            // Update loyalty points and rolling 30-day booking count/tier.
+            $pdo->prepare('UPDATE loyalty_accounts SET total_points = total_points + ? WHERE driver_id=?')->execute([$cost['total'] * 0.1, $uid]);
+            self::refreshLoyaltyRolling($pdo, $uid);
+
+            // Update platform commission aggregator for this successful booking.
+            $pdo->prepare('UPDATE platform_account SET total_commission = total_commission + ?')->execute([$commissionAmt]);
             $pdo->prepare('INSERT INTO notifications (recipient_id, channel, message, type, status) VALUES (?,?,?,?,?)')->execute([$uid, 'in_app', "Booking confirmed for {$spot['address']} on " . date('d M, H:i', strtotime($start)), 'booking', 'sent']);
             $pdo->prepare('INSERT INTO notifications (recipient_id, channel, message, type, status) VALUES (?,?,?,?,?)')->execute([$spot['owner_id'], 'in_app', "New booking received for your spot at {$spot['address']}.", 'booking', 'sent']);
             $pdo->prepare('INSERT INTO audit_log (event_type, entity_id, actor_id, spot_id, new_state) VALUES (?,?,?,?,?)')->execute(['RESERVATION_CREATED', $res_id, $uid, $spot['spot_id'], 'confirmed']);
@@ -633,6 +666,22 @@ class DriverController extends BaseController
             'peak_reason' => $peakData['reason'],
             'promo_error' => $promo_error,
         ]);
+    }
+
+    private static function refreshLoyaltyRolling(PDO $pdo, int $uid): void
+    {
+        // Rolling 30-day booking count (using reservation creation time).
+        $cntStmt = $pdo->prepare(
+            "SELECT COUNT(*) FROM reservations WHERE driver_id=? AND status IN ('confirmed','active','completed') AND created_at >= (NOW() - INTERVAL 30 DAY)"
+        );
+        $cntStmt->execute([$uid]);
+        $count = (int)$cntStmt->fetchColumn();
+
+        // Tier mapping requested: bronze < 5, silver >= 5, gold >= 20.
+        $tier = $count >= 20 ? 'gold' : ($count >= 5 ? 'silver' : 'bronze');
+
+        $pdo->prepare('UPDATE loyalty_accounts SET booking_last_30_days=?, current_tier=? WHERE driver_id=?')
+            ->execute([$count, $tier, $uid]);
     }
 
     private static function processSubscriptionBooking(
@@ -772,6 +821,8 @@ class DriverController extends BaseController
             $sub->execute([$uid, $spot['spot_id'], $vehicle_id, implode(',', $daysInts), $tod['start'], $tod['end'], $period['duration_weeks'], $sub_discount, 'active']);
             $subscription_id = $pdo->lastInsertId();
 
+            $totalPoints = 0.0;
+            $totalCommission = 0.0;
             foreach ($slots as $slot) {
                 if (
                     ParkingBookingValidator::reservationFitsOwnerAvailability(
@@ -803,9 +854,10 @@ class DriverController extends BaseController
                     return ['error' => $cost['promo_error'], 'preview' => null];
                 }
                 $transaction_id = 'SUB' . time() . rand(1000, 9999);
+                $commissionAmt = round($cost['total'] * 0.15, 2);
                 $p = $pdo->prepare('INSERT INTO payments (driver_id, amount, tax_amount, commission_amt, escrow_status, payment_status, penalty_buffer, final_amount, discount_applied, payment_method, token_ref, transaction_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)');
                 $p->execute([
-                    $uid, $cost['base'], $cost['tax'], round($cost['total'] * 0.15, 2), 'held', 'pending', round($cost['escrow'] - $cost['total'], 2), $cost['total'], $cost['discount'], 'subscription', 'SUBSCRIPTION', $transaction_id
+                    $uid, $cost['base'], $cost['tax'], $commissionAmt, 'held', 'pending', round($cost['escrow'] - $cost['total'], 2), $cost['total'], $cost['discount'], 'subscription', 'SUBSCRIPTION', $transaction_id
                 ]);
                 $pay_id = $pdo->lastInsertId();
                 $buffer_end = date('Y-m-d H:i:s', strtotime($slot['end']) + $subBuffer * 60);
@@ -814,14 +866,139 @@ class DriverController extends BaseController
                 $r->execute([$uid, $spot['spot_id'], $vehicle_id, $pay_id, $subscription_id, $slot['start'], $slot['end'], $buffer_end, 'confirmed', $qr_token, $cost['base'], $cost['tax'], $cost['discount'], $cost['total'], $cost['escrow'], $promo ?: null, 1, 5]);
                 $res_id = (int)$pdo->lastInsertId();
                 (new PaymentModel($pdo))->lockFunds($res_id, (float)$cost['total']);
+                $totalPoints += ((float)$cost['total']) * 0.1;
+                $totalCommission += (float)$commissionAmt;
             }
             $pdo->commit();
+
+            // Mirror one-time booking side effects: loyalty points + platform commission.
+            $pdo->prepare('UPDATE loyalty_accounts SET total_points = total_points + ? WHERE driver_id=?')->execute([$totalPoints, $uid]);
+            self::refreshLoyaltyRolling($pdo, $uid);
+
+            // Update platform commission aggregator for all subscription slots.
+            $pdo->prepare('UPDATE platform_account SET total_commission = total_commission + ?')->execute([$totalCommission]);
+
+            if ($promo !== '') {
+                $pdo->prepare('UPDATE promo_codes SET usage_count = usage_count + ? WHERE code=?')->execute([count($slots), $promo]);
+            }
+
+            $addr = (string)($spot['address'] ?? 'the selected spot');
+            $pdo->prepare('INSERT INTO notifications (recipient_id, channel, message, type, status) VALUES (?,?,?,?,?)')
+                ->execute([$uid, 'in_app', "Subscription created for {$addr}. Recurring reservations were generated.", 'booking', 'sent']);
+            if (!empty($spot['owner_id'])) {
+                $pdo->prepare('INSERT INTO notifications (recipient_id, channel, message, type, status) VALUES (?,?,?,?,?)')
+                    ->execute([(int)$spot['owner_id'], 'in_app', "New subscription bookings were created for your spot at {$addr}.", 'booking', 'sent']);
+            }
+
             flash('ok', 'Subscription created. Recurring reservations were generated successfully.');
             redirect(route_url('/driver/bookings?tab=bookings&status=confirmed'));
         } catch (Exception $e) {
             $pdo->rollBack();
             return ['error' => 'Subscription booking failed. Please try again.', 'preview' => null];
         }
+    }
+
+    public static function cancelSubscription(): void
+    {
+        require_role('driver');
+        $pdo = Database::getConnection();
+        new PaymentModel($pdo);
+        $bookingManager = new BookingManager($pdo);
+        $bookingManager->ensureSubscriptionSchema();
+
+        $u = current_user();
+        $uid = (int)$u['id'];
+        $subscription_id = (int)($_POST['subscription_id'] ?? 0);
+        if ($subscription_id <= 0) {
+            flash('err', 'Subscription id is required.');
+            redirect(route_url('/driver/bookings'));
+        }
+
+        // Ensure this subscription belongs to this driver and is cancellable.
+        $subStmt = $pdo->prepare('SELECT subscription_id, status FROM commuter_subscriptions WHERE subscription_id=? AND driver_id=? LIMIT 1');
+        $subStmt->execute([$subscription_id, $uid]);
+        $sub = $subStmt->fetch();
+        if (!$sub) {
+            flash('err', 'Subscription not found.');
+            redirect(route_url('/driver/bookings'));
+        }
+        if (($sub['status'] ?? '') === 'cancelled') {
+            flash('ok', 'Subscription already cancelled.');
+            redirect(route_url('/driver/bookings'));
+        }
+
+        $pdo->beginTransaction();
+        try {
+            $pdo->prepare('UPDATE commuter_subscriptions SET status="cancelled" WHERE subscription_id=? AND driver_id=?')
+                ->execute([$subscription_id, $uid]);
+
+            // Cancel only future reservations (including confirmed/pending), leave already-started ones untouched.
+            $futureStmt = $pdo->prepare(
+                'SELECT r.reservation_id, r.start_time, r.final_cost, r.status, r.spot_id, ps.owner_id, ps.address, r.payment_id
+                 FROM reservations r
+                 JOIN parking_spots ps ON ps.spot_id = r.spot_id
+                 WHERE r.subscription_id=? AND r.driver_id=? AND r.start_time >= NOW()
+                   AND r.status IN ("confirmed","pending","active")'
+            );
+            $futureStmt->execute([$subscription_id, $uid]);
+            $future = $futureStmt->fetchAll();
+
+            foreach ($future as $rr) {
+                $rid = (int)$rr['reservation_id'];
+                $paymentId = (int)($rr['payment_id'] ?? 0);
+                $startTs = strtotime((string)$rr['start_time']);
+                $now = time();
+                $refund = 0;
+                if ($startTs !== false && ($startTs - $now) > 7200) {
+                    $refund = 100;
+                } elseif ($startTs !== false && ($startTs - $now) > 3600) {
+                    $refund = 50;
+                }
+
+                $pdo->prepare("UPDATE reservations SET status='cancelled', cancelled_at=NOW() WHERE reservation_id=?")->execute([$rid]);
+                if ($paymentId > 0) {
+                    $pdo->prepare("UPDATE payments SET refund_percent=?, refund_amount=? WHERE payment_id=?")
+                        ->execute([$refund, round(((float)($rr['final_cost'] ?? 0.0)) * $refund / 100, 2), $paymentId]);
+                }
+                (new PaymentModel($pdo))->refundFunds($rid);
+
+                // Reverse refunded owner share for the 85% revenue portion (safe-guard against negatives).
+                $ownerShareFull = round(((float)($rr['final_cost'] ?? 0.0)) * 0.85, 2);
+                $refundedOwnerShare = round($ownerShareFull * ($refund / 100), 2);
+                if ($refundedOwnerShare > 0) {
+                    $pdo->prepare('UPDATE space_owners SET earnings_balance = GREATEST(0, earnings_balance - ?) WHERE owner_id=?')
+                        ->execute([$refundedOwnerShare, (int)$rr['owner_id']]);
+                }
+
+                // Update spot status based on remaining confirmed/active reservations.
+                $otherActive = $pdo->prepare('SELECT COUNT(*) FROM reservations WHERE spot_id=? AND reservation_id<>? AND status IN ("confirmed","active")');
+                $otherActive->execute([(int)$rr['spot_id'], $rid]);
+                $otherCount = (int)$otherActive->fetchColumn();
+                if ($otherCount === 0) {
+                    $pdo->prepare("UPDATE parking_spots SET status='available' WHERE spot_id=?")->execute([(int)$rr['spot_id']]);
+                } else {
+                    $pdo->prepare("UPDATE parking_spots SET status='reserved' WHERE spot_id=?")->execute([(int)$rr['spot_id']]);
+                }
+
+                // Notify next waitlisted driver (if any) for this spot.
+                $wait = $pdo->prepare('SELECT driver_id FROM waitlist WHERE spot_id=? ORDER BY joined_at ASC LIMIT 1');
+                $wait->execute([(int)$rr['spot_id']]);
+                $wdriver = $wait->fetch();
+                if ($wdriver) {
+                    $pdo->prepare('INSERT INTO notifications (recipient_id, channel, message, type, status) VALUES (?,?,?,?,?)')
+                        ->execute([(int)$wdriver['driver_id'], 'in_app', "A spot you are next in line for ({$rr['address']}) just became available!", 'waitlist', 'sent']);
+                }
+            }
+
+            $pdo->commit();
+        } catch (Exception $e) {
+            $pdo->rollBack();
+            flash('err', 'Failed to cancel subscription. Please try again.');
+            redirect(route_url('/driver/bookings'));
+        }
+
+        flash('ok', 'Subscription cancelled. Future reservations were cancelled.');
+        redirect(route_url('/driver/bookings'));
     }
 
     public static function bookings(): void
@@ -859,7 +1036,7 @@ class DriverController extends BaseController
             'SELECT cs.subscription_id, cs.days_of_week, cs.start_time_of_day, cs.end_time_of_day, cs.weeks, cs.discount_percent, cs.status, ps.address
              FROM commuter_subscriptions cs
              JOIN parking_spots ps ON ps.spot_id = cs.spot_id
-             WHERE cs.driver_id = ?
+             WHERE cs.driver_id = ? AND cs.status = "active"
              ORDER BY cs.created_at DESC'
         );
         $subs->execute([$uid]);
@@ -905,7 +1082,20 @@ class DriverController extends BaseController
             $reviewed_owner = (new ReviewModel($pdo))->hasReviewForReservation((int)$r['owner_id'], $uid, $id);
         }
 
+        // Enforce booking eligibility for any state-changing actions.
+        $driverEligibility = $pdo->prepare('SELECT can_book, account_status FROM drivers WHERE driver_id=? LIMIT 1');
+        $driverEligibility->execute([$uid]);
+        $elig = $driverEligibility->fetch() ?: ['can_book' => 0, 'account_status' => 'active'];
+
         if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+            if ((string)($elig['account_status'] ?? 'active') !== 'active') {
+                flash('err', 'Your driver account is not active. Booking actions are disabled.');
+                redirect(route_url('/driver/dashboard'));
+            }
+            if (!(int)($elig['can_book'] ?? 0)) {
+                flash('err', 'Your account is suspended from making bookings due to unpaid fines.');
+                redirect(route_url('/driver/dashboard'));
+            }
             $act = $_POST['action'] ?? '';
             if ($act === 'checkin' && $r['status'] === 'confirmed') {
                 $now = date('Y-m-d H:i:s');
@@ -924,12 +1114,20 @@ class DriverController extends BaseController
                 $penalty = (float)($penaltyBreakdown['penalty_amount'] ?? 0.0);
                 $updatedTotal = (float)$r['final_cost'] + $penalty;
                 $pdo->prepare("UPDATE reservations SET status='completed', check_out_time=?, overstay_minutes=?, penalty_amount=?, final_cost=? WHERE reservation_id=?")->execute([$now, $overstay, $penalty, $updatedTotal, $id]);
-                $pdo->prepare("UPDATE parking_spots SET status='available' WHERE spot_id=?")->execute([$r['spot_id']]);
+                // Only mark the spot as available if no other confirmed/active reservations exist.
+                $otherActive = $pdo->prepare('SELECT COUNT(*) FROM reservations WHERE spot_id=? AND reservation_id<>? AND status IN ("confirmed","active")');
+                $otherActive->execute([$r['spot_id'], $id]);
+                if ((int)$otherActive->fetchColumn() === 0) {
+                    $pdo->prepare("UPDATE parking_spots SET status='available' WHERE spot_id=?")->execute([$r['spot_id']]);
+                } else {
+                    $pdo->prepare("UPDATE parking_spots SET status='reserved' WHERE spot_id=?")->execute([$r['spot_id']]);
+                }
                 (new WaitlistModel($pdo))->notifySpotAvailable((int)$r['spot_id']);
                 $pdo->prepare("UPDATE parking_sessions SET end_time=?, status=?, duration_mins=? WHERE reservation_id=?")->execute([$now, $overstay > 0 ? 'overstay' : 'completed', (int)((strtotime($now) - strtotime($r['check_in_time'])) / 60), $id]);
                 $pdo->prepare("UPDATE payments SET final_amount = final_amount + ? WHERE payment_id=?")->execute([$penalty, $r['payment_id']]);
                 (new PaymentModel($pdo))->releaseFunds($id);
-                $owner_share = round($updatedTotal * 0.85, 2);
+                // Owners should only receive revenue for the confirmed booking cost (excluding overstay penalty).
+                $owner_share = round(((float)($r['final_cost'] ?? 0.0)) * 0.85, 2);
                 $pdo->prepare("UPDATE space_owners SET earnings_balance = earnings_balance + ? WHERE owner_id=?")->execute([$owner_share, $r['owner_id']]);
                 $pdo->prepare('INSERT INTO audit_log (event_type, entity_id, actor_id, spot_id, new_state) VALUES (?,?,?,?,?)')->execute(['QR_CHECKOUT', $id, $uid, $r['spot_id'], 'completed']);
                 flash('ok', 'Checked out.' . ($penalty > 0 ? " Overstay penalty applied: {$penalty} EGP." : ''));
@@ -955,8 +1153,8 @@ class DriverController extends BaseController
             }
             if ($act === 'extend' && $r['status'] === 'active') {
                 $extra_mins = (int)($_POST['extra_mins'] ?? 30);
-                if ($extra_mins <= 0) {
-                    flash('err', 'Extension must be at least 1 minute.');
+                if ($extra_mins < self::BOOKING_EXTENSION_MIN_MINS || $extra_mins > self::BOOKING_EXTENSION_MAX_MINS) {
+                    flash('err', 'Extension must be between ' . self::BOOKING_EXTENSION_MIN_MINS . ' and ' . self::BOOKING_EXTENSION_MAX_MINS . ' minutes.');
                 } else {
                     $bookingManagerExt = new BookingManager($pdo);
                     $extendBufferMins = $bookingManagerExt->getBufferMinutes(['buffer_duration_mins' => $r['buffer_duration_mins']]);
@@ -973,39 +1171,52 @@ class DriverController extends BaseController
                     } elseif ($bookingManagerExt->hasBufferedConflict((int)$r['spot_id'], $r['start_time'], $new_end, $extendBufferMins, $id)) {
                         flash('err', 'Cannot extend — overlaps another booking including its buffer.');
                     } else {
-                        // Calculate extension cost
-                        $ext_hours = $extra_mins / 60;
-                        $mult = $r['default_multiplier'] ?? 1.0;
-                        $vat_rate = $r['vat_rate'] ?? 0.14;
-                        $ext_base = round($r['base_rate'] * $mult * $ext_hours, 2);
-                        $ext_tax = round($ext_base * $vat_rate, 2);
-                        $ext_total = $ext_base + $ext_tax;
-                        
-                        // Check if payment is provided
-                        $confirm_extend = $_POST['confirm_extend'] ?? '';
-                        if ($confirm_extend === '1') {
-                            // Update reservation with new time and cost
-                            $new_base = $r['base_cost'] + $ext_base;
-                            $new_tax = $r['tax_amount'] + $ext_tax;
-                            $new_final = $new_base + $new_tax;
-                            
-                            $pdo->prepare('UPDATE reservations SET end_time=?, buffer_end_time=?, base_cost=?, tax_amount=?, final_cost=? WHERE reservation_id=?')
-                                ->execute([$new_end, $new_buf, $new_base, $new_tax, $new_final, $id]);
-                            $pdo->prepare('UPDATE payments SET amount=?, tax_amount=?, final_amount=? WHERE payment_id=?')
-                                ->execute([$new_base, $new_tax, $new_final, $r['payment_id']]);
-                            flash('ok', "Booking extended by {$extra_mins} minutes. Additional charge: {$ext_total} EGP");
-                        } else {
-                            // Store extension details in session for confirmation display
-                            $_SESSION['extend_pending'] = [
-                                'reservation_id' => $id,
-                                'extra_mins' => $extra_mins,
-                                'ext_base' => $ext_base,
-                                'ext_tax' => $ext_tax,
-                                'ext_total' => $ext_total,
-                                'new_end' => $new_end,
-                                'new_buf' => $new_buf,
-                            ];
+                        // Calculate extension cost, applying the same effective discount rate as the original reservation.
+                        $origBase = (float)($r['base_cost'] ?? 0.0);
+                        $origDiscount = (float)($r['discount_amount'] ?? 0.0);
+                        $discountPercent = 0.0;
+                        if ($origBase > 0 && $origDiscount > 0) {
+                            $discountPercent = max(0.0, min(100.0, ($origDiscount / $origBase) * 100.0));
                         }
+
+                        $pseudoSpot = [
+                            'base_rate' => (float)$r['base_rate'],
+                            'default_multiplier' => $r['default_multiplier'] ?? 1.0,
+                            'vat_rate' => $r['vat_rate'] ?? 0.14,
+                        ];
+                        $extCost = self::calculateBookingCost(
+                            $pseudoSpot,
+                            $pdo,
+                            '',
+                            0,
+                            $r['end_time'],
+                            $new_end,
+                            $discountPercent
+                        );
+                        $ext_base = (float)$extCost['base'];
+                        $ext_discount = (float)$extCost['discount'];
+                        $ext_tax = (float)$extCost['tax'];
+                        $ext_total = (float)$extCost['total'];
+                        
+                        // Server-side: don't rely on client-controlled confirm flags.
+                        // We already validated conflicts and availability above.
+                        $new_base = (float)$r['base_cost'] + $ext_base;
+                        $new_disc = (float)$r['discount_amount'] + $ext_discount;
+                        $new_tax = (float)$r['tax_amount'] + $ext_tax;
+                        $new_final = (float)$r['final_cost'] + $ext_total;
+
+                        $pdo->prepare('UPDATE reservations SET end_time=?, buffer_end_time=?, base_cost=?, discount_amount=?, tax_amount=?, final_cost=? WHERE reservation_id=?')
+                            ->execute([$new_end, $new_buf, $new_base, $new_disc, $new_tax, $new_final, $id]);
+                        $pdo->prepare('UPDATE payments SET amount=?, tax_amount=?, discount_applied=?, final_amount=? WHERE payment_id=?')
+                            ->execute([$new_base, $new_tax, $new_disc, $new_final, $r['payment_id']]);
+                        // Extension is an additional charge; update commission tracking too.
+                        $extCommissionAmt = round($ext_total * 0.15, 2);
+                        $pdo->prepare('UPDATE payments SET commission_amt = commission_amt + ? WHERE payment_id=?')
+                            ->execute([$extCommissionAmt, $r['payment_id']]);
+                        $pdo->prepare('UPDATE platform_account SET total_commission = total_commission + ?')
+                            ->execute([$extCommissionAmt]);
+
+                        flash('ok', "Booking extended by {$extra_mins} minutes. Additional charge: {$ext_total} EGP");
                     }
                 }
                 redirect(route_url('/driver/bookingdetail?id=' . $id));
@@ -1022,7 +1233,21 @@ class DriverController extends BaseController
                 $pdo->prepare("UPDATE reservations SET status='cancelled', cancelled_at=NOW() WHERE reservation_id=?")->execute([$id]);
                 $pdo->prepare("UPDATE payments SET refund_percent=?, refund_amount=? WHERE payment_id=?")->execute([$refund, round($r['final_cost'] * $refund / 100, 2), $r['payment_id']]);
                 (new PaymentModel($pdo))->refundFunds($id);
-                $pdo->prepare("UPDATE parking_spots SET status='available' WHERE spot_id=?")->execute([$r['spot_id']]);
+                // Reverse owner earnings for the refunded portion (safe-guarded to never go negative).
+                $ownerShareFull = round(((float)($r['final_cost'] ?? 0.0)) * 0.85, 2);
+                $refundedOwnerShare = round($ownerShareFull * ($refund / 100), 2);
+                if ($refundedOwnerShare > 0 && !empty($r['owner_id'])) {
+                    $pdo->prepare('UPDATE space_owners SET earnings_balance = GREATEST(0, earnings_balance - ?) WHERE owner_id=?')
+                        ->execute([$refundedOwnerShare, $r['owner_id']]);
+                }
+                // Only mark the spot as available if no other confirmed/active reservations exist.
+                $otherActive = $pdo->prepare('SELECT COUNT(*) FROM reservations WHERE spot_id=? AND reservation_id<>? AND status IN ("confirmed","active")');
+                $otherActive->execute([$r['spot_id'], $id]);
+                if ((int)$otherActive->fetchColumn() === 0) {
+                    $pdo->prepare("UPDATE parking_spots SET status='available' WHERE spot_id=?")->execute([$r['spot_id']]);
+                } else {
+                    $pdo->prepare("UPDATE parking_spots SET status='reserved' WHERE spot_id=?")->execute([$r['spot_id']]);
+                }
                 $wait = $pdo->prepare('SELECT driver_id FROM waitlist WHERE spot_id=? ORDER BY joined_at ASC LIMIT 1');
                 $wait->execute([$r['spot_id']]);
                 $wdriver = $wait->fetch();
@@ -1069,10 +1294,25 @@ class DriverController extends BaseController
             $act = $_POST['action'] ?? '';
             if ($act === 'add') {
                 $plate = strtoupper(trim($_POST['plate'] ?? ''));
-                $height = (float)($_POST['height'] ?? 0);
-                $width = (float)($_POST['width'] ?? 0);
+                $heightRaw = trim((string)($_POST['height'] ?? ''));
+                $widthRaw = trim((string)($_POST['width'] ?? ''));
+                $height = $heightRaw !== '' ? (float)$heightRaw : null;
+                $width = $widthRaw !== '' ? (float)$widthRaw : null;
                 $ev = isset($_POST['ev_capable']) ? 1 : 0;
-                if ($plate) {
+                $errs = [];
+                if ($plate === '') {
+                    $errs[] = 'License plate is required.';
+                }
+                if ($height !== null && ($height < self::DIMENSION_CM_MIN || $height > self::DIMENSION_CM_MAX)) {
+                    $errs[] = 'Vehicle height must be between ' . self::DIMENSION_CM_MIN . ' and ' . self::DIMENSION_CM_MAX . ' cm.';
+                }
+                if ($width !== null && ($width < self::DIMENSION_CM_MIN || $width > self::DIMENSION_CM_MAX)) {
+                    $errs[] = 'Vehicle width must be between ' . self::DIMENSION_CM_MIN . ' and ' . self::DIMENSION_CM_MAX . ' cm.';
+                }
+
+                if ($errs !== []) {
+                    flash('err', implode(' ', $errs));
+                } elseif ($plate) {
                     $exists = $pdo->prepare('SELECT COUNT(*) FROM vehicle_profiles WHERE license_plate = ?');
                     $exists->execute([$plate]);
                     if ($exists->fetchColumn() > 0) {
@@ -1081,7 +1321,8 @@ class DriverController extends BaseController
                         $isDefaultStmt = $pdo->prepare('SELECT COUNT(*) FROM vehicle_profiles WHERE owner_id=?');
                         $isDefaultStmt->execute([$uid]);
                         $def = $isDefaultStmt->fetchColumn() == 0 ? 1 : 0;
-                        $pdo->prepare('INSERT INTO vehicle_profiles (owner_id, license_plate, height_cm, width_cm, is_ev_capable, is_default) VALUES (?,?,?,?,?,?)')->execute([$uid, $plate, $height ?: null, $width ?: null, $ev, $def]);
+                        $pdo->prepare('INSERT INTO vehicle_profiles (owner_id, license_plate, height_cm, width_cm, is_ev_capable, is_default) VALUES (?,?,?,?,?,?)')
+                            ->execute([$uid, $plate, $height, $width, $ev, $def]);
                         flash('ok', 'Vehicle added.');
                     }
                 }
@@ -1247,6 +1488,13 @@ class DriverController extends BaseController
                     $pdo->prepare('INSERT INTO appeals (fine_id, driver_id, reason, evidence_url) VALUES (?,?,?,?)')->execute([$fine_id, $uid, $reason, $ev_url]);
                     $pdo->prepare('UPDATE fines SET status="appealed" WHERE fine_id=?')->execute([$fine_id]);
                     $pdo->prepare('INSERT INTO audit_log (event_type, entity_id, actor_id) VALUES (?,?,?)')->execute(['APPEAL_SUBMITTED', $fine_id, $uid]);
+                    // Notify all admins that a new appeal was submitted.
+                    $adminIds = $pdo->query('SELECT id FROM users WHERE role="admin"')->fetchAll(PDO::FETCH_COLUMN);
+                    $driverName = (string)($u['name'] ?? 'A driver');
+                    foreach ($adminIds as $aid) {
+                        $pdo->prepare('INSERT INTO notifications (recipient_id, channel, message, type, status) VALUES (?,?,?,?,?)')
+                            ->execute([(int)$aid, 'in_app', "{$driverName} submitted an appeal for fine #{$fine_id}.", 'appeal', 'sent']);
+                    }
                     flash('ok', 'Appeal submitted successfully.');
                 }
                 redirect(route_url('/driver/fines'));

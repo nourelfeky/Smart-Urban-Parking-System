@@ -24,6 +24,7 @@ if ($role === 'driver') {
         route_url('/owner/earnings') => 'Earnings',
         route_url('/owner/reports') => 'Reports',
         route_url('/owner/verify') => 'Verification',
+        route_url('/owner/notifications') => 'Notifications',
     ];
 } elseif ($role === 'admin') {
     $nav = [
@@ -31,6 +32,7 @@ if ($role === 'driver') {
         route_url('/admin/spots') => 'Spots',
         route_url('/admin/fines') => 'Fines',
         route_url('/admin/appeals') => 'Appeals',
+        route_url('/admin/notifications') => 'Notifications',
         route_url('/admin/zones') => 'Zones',
         route_url('/admin/owners') => 'Owners',
         route_url('/admin/spot-approvals') => 'Spot approvals',

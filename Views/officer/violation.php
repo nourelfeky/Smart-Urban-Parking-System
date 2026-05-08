@@ -31,8 +31,6 @@
                 <select name="vtype" class="form-control">
                     <option value="unauthorized">Unauthorized Parking</option>
                     <option value="overstay">Overstay</option>
-                    <option value="invalid_permit">Invalid Permit</option>
-                    <option value="double_parking">Double Parking</option>
                 </select>
             </div>
             <div class="form-group">

@@ -25,6 +25,7 @@ $router->get('/driver/bookings', fn () => DriverController::bookings());
 $router->get('/driver/bookingdetail', fn () => DriverController::bookingDetail());
 $router->post('/driver/bookingdetail', fn () => DriverController::bookingDetail());
 $router->post('/driver/check-extend-conflict', fn () => DriverController::checkExtendConflict());
+$router->post('/driver/subscriptions/cancel', fn () => DriverController::cancelSubscription());
 $router->get('/driver/vehicles', fn () => DriverController::vehicles());
 $router->post('/driver/vehicles', fn () => DriverController::vehicles());
 $router->get('/driver/favorites', fn () => DriverController::favorites());
@@ -44,6 +45,8 @@ $router->get('/owner/earnings', fn () => OwnerController::earnings());
 $router->post('/owner/earnings', fn () => OwnerController::earnings());
 $router->get('/owner/verify', fn () => OwnerController::verify());
 $router->post('/owner/verify', fn () => OwnerController::verify());
+$router->get('/owner/notifications', fn () => OwnerController::notifications());
+$router->post('/owner/notifications', fn () => OwnerController::notifications());
 
 // Officer
 $router->get('/officer/dashboard', fn () => OfficerController::dashboard());
@@ -57,6 +60,8 @@ $router->get('/admin/fines', fn () => AdminController::fines());
 $router->post('/admin/fines', fn () => AdminController::fines());
 $router->get('/admin/appeals', fn () => AdminController::appeals());
 $router->post('/admin/appeals', fn () => AdminController::appeals());
+$router->get('/admin/notifications', fn () => AdminController::notifications());
+$router->post('/admin/notifications', fn () => AdminController::notifications());
 $router->get('/admin/zones', fn () => AdminController::zones());
 $router->post('/admin/zones', fn () => AdminController::zones());
 $router->get('/admin/owners', fn () => AdminController::owners());

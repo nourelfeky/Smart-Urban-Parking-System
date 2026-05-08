@@ -7,6 +7,11 @@ require_once __DIR__ . '/../Models/SpotApprovalModel.php';
 
 class AdminController extends BaseController
 {
+    private const FINE_AMOUNT_MIN = 1.0;
+    private const FINE_AMOUNT_MAX = 10000.0;
+    private const VAT_PERCENT_MIN = 0.0;
+    private const VAT_PERCENT_MAX = 100.0;
+
     public static function dashboard(): void
     {
         require_role('admin');
@@ -67,9 +72,26 @@ class AdminController extends BaseController
             if ($act === 'issue') {
                 $driver_id = (int)($_POST['driver_id'] ?? 0);
                 $spot_id = (int)($_POST['spot_id'] ?? 0);
-                $type = $_POST['type'] ?? 'unauthorized';
-                $amount = (float)($_POST['amount'] ?? 50);
-                if ($driver_id && $spot_id) {
+                $type = (string)($_POST['type'] ?? 'unauthorized');
+                $allowedTypes = ['unauthorized', 'overstay'];
+                if (!in_array($type, $allowedTypes, true)) {
+                    $type = 'unauthorized';
+                }
+                $amountRaw = trim((string)($_POST['amount'] ?? '50'));
+                $amount = (float)$amountRaw;
+
+                $errs = [];
+                if (!$driver_id) {
+                    $errs[] = 'Driver is required.';
+                }
+                if (!$spot_id) {
+                    $errs[] = 'Spot is required.';
+                }
+                if ($amountRaw === '' || !is_numeric($amountRaw) || $amount < self::FINE_AMOUNT_MIN || $amount > self::FINE_AMOUNT_MAX) {
+                    $errs[] = 'Fine amount must be between ' . self::FINE_AMOUNT_MIN . ' and ' . self::FINE_AMOUNT_MAX . '.';
+                }
+
+                if ($errs === []) {
                     $pdo->prepare('INSERT INTO fines (driver_id, spot_id, type, penalty_amount) VALUES (?,?,?,?)')->execute([$driver_id, $spot_id, $type, $amount]);
                     $unpaid = $pdo->prepare("SELECT COUNT(*) FROM fines WHERE driver_id=? AND status='pending'");
                     $unpaid->execute([$driver_id]);
@@ -85,6 +107,8 @@ class AdminController extends BaseController
                     }
                     $pdo->prepare('UPDATE drivers SET unpaid_fines=? WHERE driver_id=?')->execute([$cnt, $driver_id]);
                     flash('ok', 'Fine issued. Driver now has ' . $cnt . ' unpaid fine(s).');
+                } else {
+                    flash('err', implode(' ', $errs));
                 }
             } elseif ($act === 'cancel' && $fine_id) {
                 $pdo->prepare('UPDATE fines SET status="cancelled" WHERE fine_id=?')->execute([$fine_id]);
@@ -150,6 +174,29 @@ class AdminController extends BaseController
         ]);
     }
 
+    public static function notifications(): void
+    {
+        require_role('admin');
+        $pdo = Database::getConnection();
+        $u = current_user();
+        $uid = (int)$u['id'];
+
+        if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+            $pdo->prepare('UPDATE notifications SET is_read=1 WHERE recipient_id=?')->execute([$uid]);
+            flash('ok', 'All marked as read.');
+            redirect(route_url('/admin/notifications'));
+        }
+
+        $notifs = $pdo->prepare('SELECT * FROM notifications WHERE recipient_id=? ORDER BY created_at DESC LIMIT 50');
+        $notifs->execute([$uid]);
+        $notifs = $notifs->fetchAll();
+
+        self::render('admin/notifications', [
+            'notifs' => $notifs,
+            'pageTitle' => 'Notifications',
+        ]);
+    }
+
     public static function zones(): void
     {
         require_role('admin');
@@ -159,10 +206,21 @@ class AdminController extends BaseController
             $zone_id = (int)($_POST['zone_id'] ?? 0);
             if ($act === 'add') {
                 $name = trim($_POST['name'] ?? '');
-                $vat = (float)($_POST['vat_rate'] ?? 14) / 100;
-                if ($name) {
+                $vatPercentRaw = trim((string)($_POST['vat_rate'] ?? '14'));
+                $vatPercent = (float)$vatPercentRaw;
+                $errs = [];
+                if ($name === '') {
+                    $errs[] = 'Zone name is required.';
+                }
+                if ($vatPercentRaw === '' || !is_numeric($vatPercentRaw) || $vatPercent < self::VAT_PERCENT_MIN || $vatPercent > self::VAT_PERCENT_MAX) {
+                    $errs[] = 'VAT rate must be between ' . self::VAT_PERCENT_MIN . '% and ' . self::VAT_PERCENT_MAX . '%.';
+                }
+                if ($errs === []) {
+                    $vat = $vatPercent / 100;
                     $pdo->prepare('INSERT INTO zones (name, vat_rate) VALUES (?,?)')->execute([$name, $vat]);
                     flash('ok', 'Zone added.');
+                } else {
+                    flash('err', implode(' ', $errs));
                 }
             } elseif ($act === 'lock' && $zone_id) {
                 $event = trim($_POST['locked_event'] ?? '');
@@ -249,7 +307,8 @@ class AdminController extends BaseController
                     flash('ok', 'Spot listing approved.');
                 } elseif ($act === 'reject_spot_listing') {
                     $pdo->prepare('UPDATE spot_document_submissions SET review_status="rejected", admin_note=?, reviewed_at=NOW() WHERE submission_id=?')->execute([$note ?: null, $submission_id]);
-                    $pdo->prepare('UPDATE parking_spots SET spot_approval_status=? WHERE spot_id=?')->execute([SpotApprovalModel::STATUS_REJECTED, $spot_id]);
+                    // Keep the spot clearly non-bookable after rejection so the owner can re-submit docs.
+                    $pdo->prepare('UPDATE parking_spots SET spot_approval_status=?, status="maintenance" WHERE spot_id=?')->execute([SpotApprovalModel::STATUS_REJECTED, $spot_id]);
                     $pdo->prepare('INSERT INTO notifications (recipient_id, channel, message, type, status) VALUES (?,?,?,?,?)')->execute([$owner_id, 'in_app', 'Your spot listing documents were rejected. Reason: ' . ($note ?: 'See admin feedback.') . ' You may submit new documents from My Spots.', 'spot_listing', 'sent']);
                     $pdo->prepare('INSERT INTO audit_log (event_type, entity_id, actor_id, new_state) VALUES (?,?,?,?)')->execute(['SPOT_LISTING_REJECTED', (string)$spot_id, current_user()['id'], 'rejected']);
                     flash('ok', 'Spot listing rejected.');
