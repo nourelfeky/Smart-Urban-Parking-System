@@ -24,6 +24,7 @@ $router->post('/driver/book', fn () => DriverController::book());
 $router->get('/driver/bookings', fn () => DriverController::bookings());
 $router->get('/driver/bookingdetail', fn () => DriverController::bookingDetail());
 $router->post('/driver/bookingdetail', fn () => DriverController::bookingDetail());
+$router->post('/driver/check-extend-conflict', fn () => DriverController::checkExtendConflict());
 $router->get('/driver/vehicles', fn () => DriverController::vehicles());
 $router->post('/driver/vehicles', fn () => DriverController::vehicles());
 $router->get('/driver/favorites', fn () => DriverController::favorites());

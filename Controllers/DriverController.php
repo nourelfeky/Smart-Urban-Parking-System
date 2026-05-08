@@ -973,8 +973,39 @@ class DriverController extends BaseController
                     } elseif ($bookingManagerExt->hasBufferedConflict((int)$r['spot_id'], $r['start_time'], $new_end, $extendBufferMins, $id)) {
                         flash('err', 'Cannot extend — overlaps another booking including its buffer.');
                     } else {
-                        $pdo->prepare('UPDATE reservations SET end_time=?, buffer_end_time=? WHERE reservation_id=?')->execute([$new_end, $new_buf, $id]);
-                        flash('ok', "Booking extended by {$extra_mins} minutes.");
+                        // Calculate extension cost
+                        $ext_hours = $extra_mins / 60;
+                        $mult = $r['default_multiplier'] ?? 1.0;
+                        $vat_rate = $r['vat_rate'] ?? 0.14;
+                        $ext_base = round($r['base_rate'] * $mult * $ext_hours, 2);
+                        $ext_tax = round($ext_base * $vat_rate, 2);
+                        $ext_total = $ext_base + $ext_tax;
+                        
+                        // Check if payment is provided
+                        $confirm_extend = $_POST['confirm_extend'] ?? '';
+                        if ($confirm_extend === '1') {
+                            // Update reservation with new time and cost
+                            $new_base = $r['base_cost'] + $ext_base;
+                            $new_tax = $r['tax_amount'] + $ext_tax;
+                            $new_final = $new_base + $new_tax;
+                            
+                            $pdo->prepare('UPDATE reservations SET end_time=?, buffer_end_time=?, base_cost=?, tax_amount=?, final_cost=? WHERE reservation_id=?')
+                                ->execute([$new_end, $new_buf, $new_base, $new_tax, $new_final, $id]);
+                            $pdo->prepare('UPDATE payments SET amount=?, tax_amount=?, final_amount=? WHERE payment_id=?')
+                                ->execute([$new_base, $new_tax, $new_final, $r['payment_id']]);
+                            flash('ok', "Booking extended by {$extra_mins} minutes. Additional charge: {$ext_total} EGP");
+                        } else {
+                            // Store extension details in session for confirmation display
+                            $_SESSION['extend_pending'] = [
+                                'reservation_id' => $id,
+                                'extra_mins' => $extra_mins,
+                                'ext_base' => $ext_base,
+                                'ext_tax' => $ext_tax,
+                                'ext_total' => $ext_total,
+                                'new_end' => $new_end,
+                                'new_buf' => $new_buf,
+                            ];
+                        }
                     }
                 }
                 redirect(route_url('/driver/bookingdetail?id=' . $id));
@@ -1220,6 +1251,50 @@ class DriverController extends BaseController
                 }
                 redirect(route_url('/driver/fines'));
             }
+            if ($act === 'pay_fine' && $fine_id) {
+                $fine = $pdo->prepare('SELECT * FROM fines WHERE fine_id=? AND driver_id=? AND status="pending"');
+                $fine->execute([$fine_id, $uid]);
+                $f = $fine->fetch();
+                if (!$f) {
+                    flash('err', 'Fine not found or already processed.');
+                } else {
+                    // Validate credit card details
+                    $card_number = preg_replace('/\D/', '', $_POST['card_number'] ?? '');
+                    $card_expiry_month = $_POST['card_expiry_month'] ?? '';
+                    $card_expiry_year = $_POST['card_expiry_year'] ?? '';
+                    if (strlen($card_expiry_year) === 4) {
+                        $card_expiry_year = substr($card_expiry_year, -2);
+                    }
+                    $card_expiry = $card_expiry_month . '/' . $card_expiry_year;
+                    $card_cvv = trim($_POST['card_cvv'] ?? '');
+                    $card_name = trim($_POST['card_name'] ?? '');
+
+                    $errors = [];
+                    if (!$card_number || strlen($card_number) < 13 || strlen($card_number) > 19) {
+                        $errors[] = 'Please enter a valid credit card number.';
+                    }
+                    if (!$card_expiry_month || !$card_expiry_year || !preg_match('/^(0[1-9]|1[0-2])\/(\d{2})$/', $card_expiry)) {
+                        $errors[] = 'Please enter a valid expiry date.';
+                    }
+                    if (!preg_match('/^[0-9]{3,4}$/', $card_cvv)) {
+                        $errors[] = 'Please enter a valid CVV.';
+                    }
+                    if (!$card_name) {
+                        $errors[] = 'Please enter the cardholder name.';
+                    }
+
+                    if (!empty($errors)) {
+                        flash('err', implode(' ', $errors));
+                    } else {
+                        // Simulate payment processing
+                        $pdo->prepare('UPDATE fines SET status="paid", paid_at=NOW(), charge_id=? WHERE fine_id=?')->execute([$card_number . '|' . $card_expiry, $fine_id]);
+                        $pdo->prepare('UPDATE drivers SET unpaid_fines = GREATEST(0, unpaid_fines - 1) WHERE driver_id=?')->execute([$uid]);
+                        $pdo->prepare('INSERT INTO audit_log (event_type, entity_id, actor_id) VALUES (?,?,?)')->execute(['FINE_PAID', $fine_id, $uid]);
+                        flash('ok', 'Fine paid successfully.');
+                    }
+                }
+                redirect(route_url('/driver/fines'));
+            }
         }
 
         $fines = $pdo->prepare('SELECT f.*, ps.address, a.appeal_id, a.status AS appeal_status FROM fines f JOIN parking_spots ps ON f.spot_id = ps.spot_id LEFT JOIN appeals a ON a.fine_id = f.fine_id AND a.driver_id = f.driver_id WHERE f.driver_id = ? ORDER BY f.issued_at DESC');
@@ -1231,4 +1306,29 @@ class DriverController extends BaseController
             'pageTitle' => 'My Fines',
         ]);
     }
+
+    public static function checkExtendConflict(): void
+    {
+        require_role('driver');
+        $pdo = Database::getConnection();
+        header('Content-Type: application/json');
+
+        $spot_id = (int)($_POST['spot_id'] ?? 0);
+        $start_time = $_POST['start_time'] ?? '';
+        $end_time = $_POST['end_time'] ?? '';
+        $buffer_mins = (int)($_POST['buffer_mins'] ?? 0);
+        $reservation_id = (int)($_POST['reservation_id'] ?? 0);
+
+        if (!$spot_id || !$start_time || !$end_time) {
+            echo json_encode(['hasConflict' => true, 'error' => 'Missing parameters']);
+            exit;
+        }
+
+        $bm = new BookingManager($pdo);
+        $hasConflict = $bm->hasBufferedConflict($spot_id, $start_time, $end_time, $buffer_mins, $reservation_id);
+
+        echo json_encode(['hasConflict' => $hasConflict]);
+        exit;
+    }
 }
+
