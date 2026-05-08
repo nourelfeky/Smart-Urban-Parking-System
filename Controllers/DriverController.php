@@ -294,6 +294,23 @@ class DriverController extends BaseController
 
         $show_spot_waitlist = $on_spot_waitlist || $time_based_waitlist;
 
+        $current_fav_label = null;
+        $favStmt = $pdo->prepare('SELECT custom_label FROM favorite_spots WHERE driver_id=? AND spot_id=? LIMIT 1');
+        $favStmt->execute([$uid, $spot_id]);
+        $favRow = $favStmt->fetch();
+        if ($favRow) {
+            $lbl = trim((string)($favRow['custom_label'] ?? ''));
+            if ($lbl !== '') {
+                // Keep consistent casing so the UI can match labels reliably.
+                if (strcasecmp($lbl, 'home') === 0) {
+                    $lbl = 'Home';
+                } elseif (strcasecmp($lbl, 'work') === 0) {
+                    $lbl = 'Work';
+                }
+                $current_fav_label = $lbl;
+            }
+        }
+
         self::render('driver/book', [
             'spot' => $spot,
             'vehicles' => $vehicles,
@@ -304,6 +321,7 @@ class DriverController extends BaseController
             'on_spot_waitlist' => $on_spot_waitlist,
             'show_spot_waitlist' => $show_spot_waitlist,
             'alt_ctx' => $alt_ctx,
+            'current_fav_label' => $current_fav_label,
             'pageTitle' => 'Book Spot',
         ]);
     }
@@ -1065,6 +1083,7 @@ class DriverController extends BaseController
         $pdo = Database::getConnection();
         $u = current_user();
         $uid = $u['id'];
+        $bookingManager = new BookingManager($pdo);
 
         if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $act = $_POST['action'] ?? '';
@@ -1072,6 +1091,26 @@ class DriverController extends BaseController
             if ($act === 'remove_fav') {
                 $pdo->prepare('DELETE FROM favorite_spots WHERE driver_id=? AND spot_id=?')->execute([$uid, $spot_id]);
                 flash('ok', 'Removed from favorites.');
+            } elseif ($act === 'add_fav') {
+                $custom_label = trim((string)($_POST['custom_label'] ?? ''));
+                if ($custom_label === '') {
+                    $custom_label = null;
+                } else {
+                    // Store Home/Work in consistent casing for the quick re-book feature.
+                    if (strcasecmp($custom_label, 'home') === 0) {
+                        $custom_label = 'Home';
+                    } elseif (strcasecmp($custom_label, 'work') === 0) {
+                        $custom_label = 'Work';
+                    }
+                }
+
+                // Upsert by unique key (driver_id, spot_id).
+                $pdo->prepare(
+                    'INSERT INTO favorite_spots (driver_id, spot_id, custom_label)
+                     VALUES (?,?,?)
+                     ON DUPLICATE KEY UPDATE custom_label = VALUES(custom_label)'
+                )->execute([$uid, $spot_id, $custom_label]);
+                flash('ok', $custom_label ? ('Saved to favorites as ' . $custom_label . '.') : 'Saved to favorites.');
             } elseif ($act === 'join_waitlist') {
                 $chk = $pdo->prepare('SELECT COUNT(*) FROM waitlist WHERE driver_id=? AND spot_id=?');
                 $chk->execute([$uid, $spot_id]);
@@ -1088,12 +1127,40 @@ class DriverController extends BaseController
             redirect(route_url('/driver/favorites'));
         }
 
-        $favs = $pdo->prepare('SELECT fs.favorite_id, fs.spot_id, fs.custom_label, ps.address, ps.base_rate, ps.status, w.waitlist_id FROM favorite_spots fs JOIN parking_spots ps ON ps.spot_id = fs.spot_id LEFT JOIN waitlist w ON w.spot_id = fs.spot_id AND w.driver_id = ? WHERE fs.driver_id = ? ORDER BY fs.saved_at DESC');
+        $favs = $pdo->prepare('SELECT fs.favorite_id, fs.spot_id, fs.custom_label, ps.address, ps.base_rate, ps.status, ps.latitude, ps.longitude, w.waitlist_id FROM favorite_spots fs JOIN parking_spots ps ON ps.spot_id = fs.spot_id LEFT JOIN waitlist w ON w.spot_id = fs.spot_id AND w.driver_id = ? WHERE fs.driver_id = ? ORDER BY fs.saved_at DESC');
         $favs->execute([$uid, $uid]);
         $favs = $favs->fetchAll();
 
+        $home_adjacent = [];
+        $work_adjacent = [];
+
+        foreach ($favs as $f) {
+            $label = trim((string)($f['custom_label'] ?? ''));
+            if ($label !== '' && strcasecmp($label, 'home') === 0 && $home_adjacent === []) {
+                $ref = [
+                    'spot_id' => (int)$f['spot_id'],
+                    'address' => (string)$f['address'],
+                    'base_rate' => (float)$f['base_rate'],
+                    'latitude' => $f['latitude'] ?? null,
+                    'longitude' => $f['longitude'] ?? null,
+                ];
+                $home_adjacent = $bookingManager->getAlternativeSpots($ref, 5);
+            } elseif ($label !== '' && strcasecmp($label, 'work') === 0 && $work_adjacent === []) {
+                $ref = [
+                    'spot_id' => (int)$f['spot_id'],
+                    'address' => (string)$f['address'],
+                    'base_rate' => (float)$f['base_rate'],
+                    'latitude' => $f['latitude'] ?? null,
+                    'longitude' => $f['longitude'] ?? null,
+                ];
+                $work_adjacent = $bookingManager->getAlternativeSpots($ref, 5);
+            }
+        }
+
         self::render('driver/favorites', [
             'favs' => $favs,
+            'home_adjacent' => $home_adjacent,
+            'work_adjacent' => $work_adjacent,
             'pageTitle' => 'Favorites & Waitlist',
         ]);
     }

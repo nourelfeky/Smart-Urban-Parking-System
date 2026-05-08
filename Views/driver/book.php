@@ -3,6 +3,7 @@ $booking_mode = $_POST['booking_mode'] ?? $_GET['booking_mode'] ?? 'one_time';
 $booking_mode = $booking_mode === 'subscription' ? 'subscription' : 'one_time';
 $is_subscription_ui = $booking_mode === 'subscription';
 $alt_ctx = $alt_ctx ?? ['start' => '', 'end' => '', 'booking_mode' => 'one_time'];
+$current_fav_label = $current_fav_label ?? null;
 $on_spot_waitlist = $on_spot_waitlist ?? false;
 $show_spot_waitlist = $show_spot_waitlist ?? false;
 $pref_start = $_POST['start_time'] ?? ($alt_ctx['start'] ?? ($_GET['start'] ?? ''));
@@ -27,6 +28,53 @@ $waitlist_action_url = route_url('/driver/book?' . http_build_query($wl_q));
         <div class="alert alert-info mt-3">Your loyalty tier gives you <?= $loyalty_discount ?>% discount!</div>
     <?php endif; ?>
     <div class="text-muted mt-2">A mandatory 10-minute buffer is enforced between consecutive bookings on this spot.</div>
+</div>
+
+<div class="card mb-3">
+    <div class="card-title">Save to Favorites</div>
+    <p class="text-muted" style="margin-top:-6px">
+        Save this spot so you can quickly re-book nearby alternatives from your Favorites page.
+    </p>
+
+    <?php if (!empty($current_fav_label)): ?>
+        <div style="margin-bottom:10px">
+            <span class="badge badge-blue">Saved as <?= htmlspecialchars((string)$current_fav_label) ?></span>
+        </div>
+    <?php else: ?>
+        <div style="margin-bottom:10px">
+            <span class="badge badge-gray">Not saved yet</span>
+        </div>
+    <?php endif; ?>
+
+    <form method="post" action="<?= htmlspecialchars(route_url('/driver/favorites'), ENT_QUOTES, 'UTF-8') ?>">
+        <input type="hidden" name="action" value="add_fav">
+        <input type="hidden" name="spot_id" value="<?= (int)$spot['spot_id'] ?>">
+
+        <div class="form-row" style="align-items:flex-end">
+            <div class="form-group" style="min-width:240px">
+                <label>Label</label>
+                <select name="custom_label" class="form-control">
+                    <option value="" <?= empty($current_fav_label) ? 'selected' : '' ?>>Favorite (no label)</option>
+                    <option value="Home" <?= ($current_fav_label === 'Home') ? 'selected' : '' ?>>Home</option>
+                    <option value="Work" <?= ($current_fav_label === 'Work') ? 'selected' : '' ?>>Work</option>
+                </select>
+                <small class="text-muted" style="display:block;margin-top:6px">
+                    Choosing <strong>Home</strong> or <strong>Work</strong> enables quick re-booking nearby spots.
+                </small>
+            </div>
+            <div style="margin-bottom:2px">
+                <button type="submit" class="btn btn-primary">Save</button>
+            </div>
+        </div>
+    </form>
+
+    <?php if (!empty($current_fav_label)): ?>
+        <form method="post" action="<?= htmlspecialchars(route_url('/driver/favorites'), ENT_QUOTES, 'UTF-8') ?>" style="margin-top:10px" onsubmit="return confirm('Remove this spot from favorites?');">
+            <input type="hidden" name="action" value="remove_fav">
+            <input type="hidden" name="spot_id" value="<?= (int)$spot['spot_id'] ?>">
+            <button type="submit" class="btn btn-outline">Remove from Favorites</button>
+        </form>
+    <?php endif; ?>
 </div>
 
 <?php if ($err): ?>
