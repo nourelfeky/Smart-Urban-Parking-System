@@ -4,6 +4,9 @@ require_once __DIR__ . '/BaseController.php';
 require_once __DIR__ . '/../Core/Database.php';
 require_once __DIR__ . '/../Core/Auth.php';
 require_once __DIR__ . '/../Models/SpotApprovalModel.php';
+require_once __DIR__ . '/../Models/BookingDisputeModel.php';
+require_once __DIR__ . '/../Models/DriverWalletModel.php';
+require_once __DIR__ . '/../Models/PaymentModel.php';
 
 class AdminController extends BaseController
 {
@@ -227,13 +230,28 @@ class AdminController extends BaseController
                 $start = $_POST['lock_start'] ?? '';
                 $end = $_POST['lock_end'] ?? '';
                 $pdo->prepare('UPDATE zones SET status="locked", locked_event=?, lock_start=?, lock_end=? WHERE zone_id=?')->execute([$event, $start, $end, $zone_id]);
-                $booked = $pdo->prepare('SELECT r.reservation_id, r.driver_id FROM reservations r JOIN parking_spots ps ON r.spot_id = ps.spot_id WHERE ps.zone_id = ? AND r.status IN ("confirmed","pending") AND r.start_time >= ?');
+                $booked = $pdo->prepare(
+                    'SELECT r.reservation_id, r.driver_id, r.final_cost
+                     FROM reservations r
+                     JOIN parking_spots ps ON r.spot_id = ps.spot_id
+                     WHERE ps.zone_id = ? AND r.status IN ("confirmed","pending") AND r.start_time >= ?'
+                );
                 $booked->execute([$zone_id, $start]);
                 $affected = $booked->fetchAll();
+                new PaymentModel($pdo);
                 foreach ($affected as $b) {
-                    $pdo->prepare('UPDATE reservations SET status="cancelled", cancelled_at=NOW() WHERE reservation_id=?')->execute([$b['reservation_id']]);
-                    $pdo->prepare('UPDATE payments SET escrow_status="refunded", refund_percent=100 WHERE payment_id=(SELECT payment_id FROM reservations WHERE reservation_id=?)')->execute([$b['reservation_id']]);
-                    $pdo->prepare('INSERT INTO notifications (recipient_id, channel, message, type, status) VALUES (?,?,?,?,?)')->execute([$b['driver_id'], 'in_app', "Your booking was cancelled because zone was locked for: {$event}. Full refund issued.", 'zone_lock', 'sent']);
+                    $rid = (int)$b['reservation_id'];
+                    $did = (int)$b['driver_id'];
+                    $finalCost = round((float)($b['final_cost'] ?? 0), 2);
+                    $pdo->prepare('UPDATE reservations SET status="cancelled", cancelled_at=NOW() WHERE reservation_id=?')->execute([$rid]);
+                    $pdo->prepare(
+                        'UPDATE payments SET escrow_status="refunded", refund_percent=100, refund_amount=? WHERE payment_id=(SELECT payment_id FROM reservations WHERE reservation_id=?)'
+                    )->execute([$finalCost, $rid]);
+                    (new PaymentModel($pdo))->refundFunds($rid);
+                    if ($finalCost > 0) {
+                        DriverWalletModel::credit($pdo, $did, $finalCost);
+                    }
+                    $pdo->prepare('INSERT INTO notifications (recipient_id, channel, message, type, status) VALUES (?,?,?,?,?)')->execute([$did, 'in_app', "Your booking was cancelled because zone was locked for: {$event}. Full refund issued.", 'zone_lock', 'sent']);
                 }
                 $pdo->prepare('INSERT INTO audit_log (event_type, entity_id, actor_id, new_state) VALUES (?,?,?,?)')->execute(['ZONE_LOCKED', $zone_id, current_user()['id'], 'locked']);
                 flash('ok', 'Zone locked. ' . count($affected) . ' booking(s) cancelled with full refund.');
@@ -334,6 +352,42 @@ SQL;
         self::render('admin/spot_approvals', [
             'pending' => $pending,
             'pageTitle' => 'Spot listing approvals',
+        ]);
+    }
+
+    public static function bookingDisputes(): void
+    {
+        require_role('admin');
+        $pdo = Database::getConnection();
+        $model = new BookingDisputeModel($pdo);
+
+        if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+            $act = $_POST['action'] ?? '';
+            $did = (int)($_POST['dispute_id'] ?? 0);
+            $adminId = (int)(current_user()['id'] ?? 0);
+            if ($act === 'approve' && $did > 0) {
+                $pct = (float)($_POST['approved_percent'] ?? 0);
+                $note = trim((string)($_POST['admin_note'] ?? ''));
+                $res = $model->resolveApprove($did, $pct, $note, $adminId > 0 ? $adminId : null);
+                if ($res['ok'] ?? false) {
+                    flash('ok', 'Dispute approved. Owner balance adjusted; driver notified.');
+                } else {
+                    flash('err', $res['error'] ?? 'Could not approve dispute.');
+                }
+            } elseif ($act === 'reject' && $did > 0) {
+                $note = trim((string)($_POST['admin_note'] ?? ''));
+                if ($model->resolveReject($did, $note)) {
+                    flash('ok', 'Dispute rejected.');
+                } else {
+                    flash('err', 'Could not update dispute.');
+                }
+            }
+            redirect(route_url('/admin/booking-disputes'));
+        }
+
+        self::render('admin/booking_disputes', [
+            'pending' => $model->listPendingWithContext(),
+            'pageTitle' => 'Booking disputes',
         ]);
     }
 

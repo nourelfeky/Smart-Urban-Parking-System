@@ -1,6 +1,7 @@
 <?php
 
 require_once __DIR__ . '/../Core/Database.php';
+require_once __DIR__ . '/../Core/AppClock.php';
 require_once __DIR__ . '/ParkingBookingValidator.php';
 require_once __DIR__ . '/SpotApprovalModel.php';
 
@@ -409,7 +410,7 @@ class BookingManager
                 $end = $dayStr . ' ' . $endTimeHms;
                 $st = strtotime($start);
                 $en = strtotime($end);
-                if ($st !== false && $en !== false && $st < $en && $st >= time()) {
+                if ($st !== false && $en !== false && $st < $en && $st >= AppClock::timestamp()) {
                     $slots[] = ['start' => date('Y-m-d H:i:s', $st), 'end' => date('Y-m-d H:i:s', $en)];
                 }
             }

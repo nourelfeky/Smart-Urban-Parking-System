@@ -68,6 +68,8 @@ $router->get('/admin/owners', fn () => AdminController::owners());
 $router->post('/admin/owners', fn () => AdminController::owners());
 $router->get('/admin/spot-approvals', fn () => AdminController::spotApprovals());
 $router->post('/admin/spot-approvals', fn () => AdminController::spotApprovals());
+$router->get('/admin/booking-disputes', fn () => AdminController::bookingDisputes());
+$router->post('/admin/booking-disputes', fn () => AdminController::bookingDisputes());
 $router->get('/admin/heatmap', fn () => AdminController::heatmap());
 $router->get('/admin/view-doc', fn () => AdminController::viewDoc());
 

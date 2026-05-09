@@ -2,6 +2,12 @@
 
 declare(strict_types=1);
 
+// Application wall-clock (must match MySQL SESSION time_zone set in Database::getConnection).
+if (!defined('APP_TIMEZONE')) {
+    define('APP_TIMEZONE', 'Africa/Cairo');
+}
+date_default_timezone_set(APP_TIMEZONE);
+
 require_once __DIR__ . '/Core/Session.php';
 Session::start();
 

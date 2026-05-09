@@ -38,6 +38,7 @@ CREATE TABLE `drivers` (
   `unpaid_fines`  INT          NOT NULL DEFAULT 0,
   `can_book`      TINYINT(1)   NOT NULL DEFAULT 1,
   `push_enabled`  TINYINT(1)   NOT NULL DEFAULT 1,
+  `wallet_balance` DECIMAL(10,2) NOT NULL DEFAULT 0.00,
   FOREIGN KEY (`driver_id`) REFERENCES `users`(`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 

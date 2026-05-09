@@ -28,6 +28,7 @@
 
 <div class="card">
     <div class="card-title">Reservation Info</div>
+    <p class="text-muted" style="font-size:13px;margin-bottom:12px">Times use the app timezone (<?= htmlspecialchars(defined('APP_TIMEZONE') ? APP_TIMEZONE : 'UTC') ?>).</p>
     <table style="max-width:480px">
         <tr><td class="text-muted">From</td><td style="padding-left:24px"><?= date('d M Y, H:i', strtotime($r['start_time'])) ?></td></tr>
         <tr><td class="text-muted">To</td><td style="padding-left:24px"><?= date('d M Y, H:i', strtotime($r['end_time'])) ?></td></tr>
@@ -111,6 +112,7 @@
         <?php if ($r['status'] === 'confirmed'): ?>
         <form method="post" style="display:inline">
             <input type="hidden" name="action" value="checkin">
+            <input type="hidden" name="qr_token" value="<?= htmlspecialchars((string)$r['qr_code_token']) ?>">
             <button class="btn btn-success">Check In</button>
         </form>
         <form method="post" style="display:inline" onsubmit="return confirm('Cancel this booking?')">
@@ -120,6 +122,7 @@
         <?php elseif ($r['status'] === 'active'): ?>
         <form method="post" style="display:inline">
             <input type="hidden" name="action" value="checkout">
+            <input type="hidden" name="qr_token" value="<?= htmlspecialchars((string)$r['qr_code_token']) ?>">
             <button class="btn btn-primary">Check Out</button>
         </form>
         <details style="display:inline-block">
@@ -150,6 +153,30 @@
         </details>
         <?php endif; ?>
     </div>
+    <p class="text-muted mt-2" style="font-size:12px">Check-in is allowed from 15 minutes before your start time through the end of the grace period (<?= (int)($r['grace_period_mins'] ?? 5) ?> min after start). The QR token must match (browser sends it with the button).</p>
+</div>
+<?php endif; ?>
+
+<?php if (!empty($can_file_dispute ?? false)): ?>
+<div class="card">
+    <div class="card-title">Listing dispute (inaccurate description)</div>
+    <?php if (!empty($dispute_pending ?? false)): ?>
+        <p class="text-muted">You have a pending dispute for this booking. An admin will review it.</p>
+    <?php else: ?>
+        <p class="text-muted">If the spot did not match the listing (e.g. size), open a dispute. An admin can approve a partial refund and adjust the owner’s balance.</p>
+        <form method="post" style="max-width:520px">
+            <input type="hidden" name="action" value="file_dispute">
+            <div class="form-group">
+                <label>Describe the problem</label>
+                <textarea name="dispute_reason" class="form-control" rows="3" required placeholder="Example: advertised sedan parking but opening too narrow for my vehicle."></textarea>
+            </div>
+            <div class="form-group">
+                <label>Requested refund % (optional)</label>
+                <input type="number" name="requested_percent" class="form-control" min="0" max="100" step="1" placeholder="e.g. 30">
+            </div>
+            <button type="submit" class="btn btn-outline">Submit dispute</button>
+        </form>
+    <?php endif; ?>
 </div>
 <?php endif; ?>
 

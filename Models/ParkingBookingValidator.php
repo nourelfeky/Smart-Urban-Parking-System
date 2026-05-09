@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+require_once __DIR__ . '/../Core/AppClock.php';
 require_once __DIR__ . '/SubscriptionPeriodService.php';
 
 /**
@@ -29,7 +30,7 @@ class ParkingBookingValidator
         if ($endTs <= $startTs) {
             return ['error' => 'End time must be after start time.'];
         }
-        if ($startTs < time()) {
+        if ($startTs < AppClock::timestamp()) {
             return ['error' => 'Start time cannot be in the past.'];
         }
         return [

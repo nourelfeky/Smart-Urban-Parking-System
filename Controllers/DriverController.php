@@ -17,6 +17,10 @@ require_once __DIR__ . '/../Models/PaymentMethodStrategy.php';
 require_once __DIR__ . '/../Models/PricingEngine.php';
 require_once __DIR__ . '/../Models/TaxEngine.php';
 require_once __DIR__ . '/../Models/ParkingSystemConfig.php';
+require_once __DIR__ . '/../Core/AppClock.php';
+require_once __DIR__ . '/../Models/ReservationTimeService.php';
+require_once __DIR__ . '/../Models/BookingDisputeModel.php';
+require_once __DIR__ . '/../Models/DriverWalletModel.php';
 
 class DriverController extends BaseController
 {
@@ -29,6 +33,7 @@ class DriverController extends BaseController
     {
         require_role('driver');
         $pdo = Database::getConnection();
+        ReservationTimeService::syncNoShowStatuses($pdo);
         $bookingManager = new BookingManager($pdo);
         $bookingManager->ensureSubscriptionSchema();
         $u = current_user();
@@ -71,11 +76,11 @@ class DriverController extends BaseController
         $subsStmt->execute([$uid]);
         $subscriptions = $subsStmt->fetchAll();
 
-        $driverInfo = $pdo->prepare('SELECT can_book, account_status FROM drivers WHERE driver_id=?');
+        DriverWalletModel::ensureSchema($pdo);
+        $driverInfo = $pdo->prepare('SELECT can_book, account_status, wallet_balance FROM drivers WHERE driver_id=?');
         $driverInfo->execute([$uid]);
-        $dinfo = $driverInfo->fetch();
-        // Wallet balance is not stored in DB yet (best-effort default).
-        $dinfo['wallet_balance'] = 0.00;
+        $dinfo = $driverInfo->fetch() ?: ['can_book' => 1, 'account_status' => 'active', 'wallet_balance' => 0];
+        $dinfo['wallet_balance'] = (float)($dinfo['wallet_balance'] ?? 0);
         if (!isset($dinfo['account_status']) || !$dinfo['account_status']) {
             $dinfo['account_status'] = 'active';
         }
@@ -537,7 +542,7 @@ class DriverController extends BaseController
         $month = (int)$exp[1];
         $year = 2000 + (int)$exp[2];
         $expiry_ts = mktime(23, 59, 59, $month + 1, 0, $year);
-        if ($expiry_ts < time()) {
+        if ($expiry_ts < AppClock::timestamp()) {
             return ['error' => 'This credit card has expired.', 'preview' => null];
         }
 
@@ -966,21 +971,19 @@ class DriverController extends BaseController
             foreach ($future as $rr) {
                 $rid = (int)$rr['reservation_id'];
                 $paymentId = (int)($rr['payment_id'] ?? 0);
-                $startTs = strtotime((string)$rr['start_time']);
-                $now = time();
-                $refund = 0;
-                if ($startTs !== false && ($startTs - $now) > 7200) {
-                    $refund = 100;
-                } elseif ($startTs !== false && ($startTs - $now) > 3600) {
-                    $refund = 50;
-                }
+                $tier = ReservationTimeService::cancelRefundPercent(AppClock::now(), (string)$rr['start_time']);
+                $refund = $tier['refund'];
 
-                $pdo->prepare("UPDATE reservations SET status='cancelled', cancelled_at=NOW() WHERE reservation_id=?")->execute([$rid]);
+                $pdo->prepare("UPDATE reservations SET status='cancelled', cancelled_at=? WHERE reservation_id=?")->execute([AppClock::nowSql(), $rid]);
+                $refundAmt = round(((float)($rr['final_cost'] ?? 0.0)) * $refund / 100, 2);
                 if ($paymentId > 0) {
                     $pdo->prepare("UPDATE payments SET refund_percent=?, refund_amount=? WHERE payment_id=?")
-                        ->execute([$refund, round(((float)($rr['final_cost'] ?? 0.0)) * $refund / 100, 2), $paymentId]);
+                        ->execute([$refund, $refundAmt, $paymentId]);
                 }
-                (new PaymentModel($pdo))->refundFunds($rid);
+                if ($refund > 0) {
+                    (new PaymentModel($pdo))->refundFunds($rid);
+                    DriverWalletModel::credit($pdo, $uid, $refundAmt);
+                }
 
                 // Reverse refunded owner share for the 85% revenue portion (safe-guard against negatives).
                 $ownerShareFull = round(((float)($rr['final_cost'] ?? 0.0)) * 0.85, 2);
@@ -1025,6 +1028,7 @@ class DriverController extends BaseController
     {
         require_role('driver');
         $pdo = Database::getConnection();
+        ReservationTimeService::syncNoShowStatuses($pdo);
         $bookingManager = new BookingManager($pdo);
         $bookingManager->ensureSubscriptionSchema();
         $u = current_user();
@@ -1090,12 +1094,15 @@ class DriverController extends BaseController
         $u = current_user();
         $uid = $u['id'];
         $id = (int)($_GET['id'] ?? 0);
+        ReservationTimeService::syncNoShowStatuses($pdo);
         $res = $pdo->prepare('SELECT r.*, ps.address, ps.latitude, ps.longitude, ps.base_rate, ps.owner_id, ps.availability_start, ps.availability_end, vp.license_plate, pe.default_multiplier, bm.buffer_duration_mins, p.payment_status, p.escrow_status FROM reservations r JOIN parking_spots ps ON r.spot_id = ps.spot_id LEFT JOIN vehicle_profiles vp ON r.vehicle_id = vp.vehicle_id LEFT JOIN pricing_engine pe ON pe.spot_id = ps.spot_id LEFT JOIN buffer_manager bm ON bm.spot_id = ps.spot_id LEFT JOIN payments p ON p.payment_id = r.payment_id WHERE r.reservation_id = ? AND r.driver_id = ?');
         $res->execute([$id, $uid]);
         $r = $res->fetch();
         if (!$r) {
             redirect(route_url('/driver/bookings'));
         }
+
+        $disputeModel = new BookingDisputeModel($pdo);
 
         $reviewed_owner = false;
         if ($r['status'] === 'completed') {
@@ -1117,8 +1124,30 @@ class DriverController extends BaseController
                 redirect(route_url('/driver/dashboard'));
             }
             $act = $_POST['action'] ?? '';
+            if ($act === 'file_dispute' && in_array($r['status'], ['completed', 'active'], true)) {
+                try {
+                    $reason = trim((string)($_POST['dispute_reason'] ?? ''));
+                    $reqRaw = trim((string)($_POST['requested_percent'] ?? ''));
+                    $reqPct = $reqRaw !== '' ? (float)$reqRaw : null;
+                    $disputeModel->create($id, (int)$uid, $reason, $reqPct);
+                    flash('ok', 'Dispute submitted. An admin will review your listing-accuracy claim.');
+                } catch (InvalidArgumentException $e) {
+                    flash('err', $e->getMessage());
+                }
+                redirect(route_url('/driver/bookingdetail?id=' . $id));
+            }
             if ($act === 'checkin' && $r['status'] === 'confirmed') {
-                $now = date('Y-m-d H:i:s');
+                $postedQr = (string)($_POST['qr_token'] ?? '');
+                if (!ReservationTimeService::verifyQrToken($postedQr, (string)$r['qr_code_token'])) {
+                    flash('err', 'QR validation failed. Refresh the page and try check-in again.');
+                    redirect(route_url('/driver/bookingdetail?id=' . $id));
+                }
+                $checkErr = ReservationTimeService::checkInAllowed(AppClock::now(), $r);
+                if ($checkErr !== null) {
+                    flash('err', $checkErr);
+                    redirect(route_url('/driver/bookingdetail?id=' . $id));
+                }
+                $now = AppClock::nowSql();
                 $pdo->prepare("UPDATE reservations SET status='active', check_in_time=?, arrival_time=? WHERE reservation_id=?")->execute([$now, $now, $id]);
                 // Keep spot as "available" in parking_spots so it still appears on Find Parking / map.
                 // Occupancy is tracked by reservations (active/confirmed) + buffer conflict checks on booking.
@@ -1128,7 +1157,17 @@ class DriverController extends BaseController
                 redirect(route_url('/driver/bookingdetail?id=' . $id));
             }
             if ($act === 'checkout' && $r['status'] === 'active') {
-                $now = date('Y-m-d H:i:s');
+                $postedQr = (string)($_POST['qr_token'] ?? '');
+                if (!ReservationTimeService::verifyQrToken($postedQr, (string)$r['qr_code_token'])) {
+                    flash('err', 'QR validation failed. Refresh the page and try check-out again.');
+                    redirect(route_url('/driver/bookingdetail?id=' . $id));
+                }
+                $coErr = ReservationTimeService::checkOutAllowed(AppClock::now(), $r);
+                if ($coErr !== null) {
+                    flash('err', $coErr);
+                    redirect(route_url('/driver/bookingdetail?id=' . $id));
+                }
+                $now = AppClock::nowSql();
                 $penaltyBreakdown = (new PenaltyModel($pdo))->calculateOverstayPenaltyBreakdown($r['end_time'], $now);
                 $overstay = (int)($penaltyBreakdown['overstay_minutes'] ?? 0);
                 $penalty = (float)($penaltyBreakdown['penalty_amount'] ?? 0.0);
@@ -1234,17 +1273,15 @@ class DriverController extends BaseController
                 redirect(route_url('/driver/bookingdetail?id=' . $id));
             }
             if ($act === 'cancel' && in_array($r['status'], ['confirmed', 'pending'])) {
-                $now = time();
-                $start = strtotime($r['start_time']);
-                $refund = 0;
-                if ($start - $now > 7200) {
-                    $refund = 100;
-                } elseif ($start - $now > 3600) {
-                    $refund = 50;
+                $tier = ReservationTimeService::cancelRefundPercent(AppClock::now(), (string)$r['start_time']);
+                $refund = $tier['refund'];
+                $pdo->prepare("UPDATE reservations SET status='cancelled', cancelled_at=? WHERE reservation_id=?")->execute([AppClock::nowSql(), $id]);
+                $refundAmt = round((float)$r['final_cost'] * $refund / 100, 2);
+                $pdo->prepare("UPDATE payments SET refund_percent=?, refund_amount=? WHERE payment_id=?")->execute([$refund, $refundAmt, $r['payment_id']]);
+                if ($refund > 0) {
+                    (new PaymentModel($pdo))->refundFunds($id);
+                    DriverWalletModel::credit($pdo, $uid, $refundAmt);
                 }
-                $pdo->prepare("UPDATE reservations SET status='cancelled', cancelled_at=NOW() WHERE reservation_id=?")->execute([$id]);
-                $pdo->prepare("UPDATE payments SET refund_percent=?, refund_amount=? WHERE payment_id=?")->execute([$refund, round($r['final_cost'] * $refund / 100, 2), $r['payment_id']]);
-                (new PaymentModel($pdo))->refundFunds($id);
                 // Reverse owner earnings for the refunded portion (safe-guarded to never go negative).
                 $ownerShareFull = round(((float)($r['final_cost'] ?? 0.0)) * 0.85, 2);
                 $refundedOwnerShare = round($ownerShareFull * ($refund / 100), 2);
@@ -1266,6 +1303,8 @@ class DriverController extends BaseController
             'id' => $id,
             'bc' => $bc,
             'reviewed_owner' => $reviewed_owner,
+            'dispute_pending' => $disputeModel->driverHasOpenDispute($id),
+            'can_file_dispute' => in_array($r['status'], ['completed', 'active'], true),
             'pageTitle' => 'Booking #' . $id,
         ]);
     }

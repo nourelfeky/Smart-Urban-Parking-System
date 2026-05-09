@@ -32,6 +32,7 @@ if ($role === 'driver') {
         route_url('/admin/spots') => 'Spots',
         route_url('/admin/fines') => 'Fines',
         route_url('/admin/appeals') => 'Appeals',
+        route_url('/admin/booking-disputes') => 'Booking disputes',
         route_url('/admin/notifications') => 'Notifications',
         route_url('/admin/zones') => 'Zones',
         route_url('/admin/owners') => 'Owners',
