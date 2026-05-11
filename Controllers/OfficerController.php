@@ -6,9 +6,6 @@ require_once __DIR__ . '/../Core/Auth.php';
 
 class OfficerController extends BaseController
 {
-    private const FINE_AMOUNT_MIN = 1.0;
-    private const FINE_AMOUNT_MAX = 10000.0;
-
     public static function dashboard(): void
     {
         require_role('officer');
@@ -42,17 +39,8 @@ class OfficerController extends BaseController
             }
             $penaltyRaw = trim((string)($_POST['penalty_amount'] ?? '50'));
             $penalty = (float)$penaltyRaw;
-            
-            $errs = [];
-            if (!$driver_id) {
-                $errs[] = 'Driver is required.';
-            }
-            if (!$spot_id) {
-                $errs[] = 'Spot is required.';
-            }
-            if ($penaltyRaw === '' || !is_numeric($penaltyRaw) || $penalty < self::FINE_AMOUNT_MIN || $penalty > self::FINE_AMOUNT_MAX) {
-                $errs[] = 'Penalty amount must be between ' . self::FINE_AMOUNT_MIN . ' and ' . self::FINE_AMOUNT_MAX . '.';
-            }
+
+            $errs = FineIssueValidator::validateIssuePayload($driver_id, $spot_id, $penaltyRaw, 'Penalty amount');
 
             if ($errs === []) {
                 // Use 'fines' table
@@ -63,7 +51,7 @@ class OfficerController extends BaseController
                 $unpaid = $pdo->prepare("SELECT COUNT(*) FROM fines WHERE driver_id=? AND status='pending'");
                 $unpaid->execute([$driver_id]);
                 $cnt = (int)$unpaid->fetchColumn();
-                if ($cnt >= 3) {
+                if (DriverSanctionPolicy::shouldSuspendForUnpaidFines($cnt)) {
                     $pdo->prepare('UPDATE drivers SET can_book=0, unpaid_fines=? WHERE driver_id=?')->execute([$cnt, $driver_id]);
                     $bl = $pdo->prepare('SELECT COUNT(*) FROM blacklist WHERE driver_id=?');
                     $bl->execute([$driver_id]);

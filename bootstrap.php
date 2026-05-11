@@ -57,6 +57,12 @@ spl_autoload_register(function (string $class): void {
 if (!defined('PEAK_MULTIPLIER')) {
     define('PEAK_MULTIPLIER', 1.25);
 }
+if (!defined('PEAK_MULTIPLIER_MIN')) {
+    define('PEAK_MULTIPLIER_MIN', 1.0);
+}
+if (!defined('PEAK_MULTIPLIER_MAX')) {
+    define('PEAK_MULTIPLIER_MAX', 3.0);
+}
 if (!defined('PEAK_HOURS')) {
     define('PEAK_HOURS', [
         ['start' => '08:00', 'end' => '10:00'],

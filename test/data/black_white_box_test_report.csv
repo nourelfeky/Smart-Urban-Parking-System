@@ -1,0 +1,23 @@
+test_id	test_type	component	function_key	input_json	expected_json	notes
+WB-CANCEL-001	WhiteBox	Cancellation Refund Tier	cancelRefund	{"now":"2026-06-01 08:00:00","start":"2026-06-01 11:00:01"}	{"refund":100}	More than 7200s before start - 100 percent
+WB-CANCEL-002	WhiteBox	Cancellation Refund Tier	cancelRefund	{"now":"2026-06-01 09:00:00","start":"2026-06-01 10:30:00"}	{"refund":50}	Between 3601s and 7200s - 50 percent
+WB-CANCEL-003	WhiteBox	Cancellation Refund Tier	cancelRefund	{"now":"2026-06-01 09:30:00","start":"2026-06-01 10:30:00"}	{"refund":0}	At most 3600s - 0 percent
+WB-OVER-001	WhiteBox	Overstay Penalty Calculator	overstayPenalty	{"reserved_end":"2026-06-01 10:00:00","actual_end":"2026-06-01 10:00:00"}	{"penalty":0,"minutes":0}	No overstay
+WB-OVER-002	WhiteBox	Overstay Penalty Calculator	overstayPenalty	{"reserved_end":"2026-06-01 10:00:00","actual_end":"2026-06-01 10:30:00"}	{"penalty":15,"minutes":30}	30 min at 0.5 per minute
+WB-PEAK-001	WhiteBox	Peak Pricing Engine	peakMultiplierBound	{"raw":0.5,"min":1,"max":3}	{"effective":1}	Clamp to min
+WB-PEAK-002	WhiteBox	Peak Pricing Engine	peakMultiplierBound	{"raw":10,"min":1,"max":3}	{"effective":3}	Clamp to max
+WB-PEAK-003	WhiteBox	Peak Pricing Engine	peakPricing	{"base":100,"start":"2026-06-02 09:00:00"}	{"is_peak":true,"reason":"peak_hour"}	Morning peak window
+WB-LOY-001	WhiteBox	Loyalty Discount Program	loyaltyTier	{"bookings_30d":0}	{"tier":"bronze","discount":0}	
+WB-LOY-002	WhiteBox	Loyalty Discount Program	loyaltyTier	{"bookings_30d":5}	{"tier":"silver","discount":5}	
+WB-LOY-003	WhiteBox	Loyalty Discount Program	loyaltyTier	{"bookings_30d":10}	{"tier":"silver","discount":10}	
+WB-LOY-004	WhiteBox	Loyalty Discount Program	loyaltyTier	{"bookings_30d":20}	{"tier":"gold","discount":15}	
+WB-FINE-001	WhiteBox	Automated Fine Generation	fineValidation	{"driver_id":0,"spot_id":1,"amount":"50"}	{"error_count":1,"has_driver_error":1}	
+WB-FINE-002	WhiteBox	Automated Fine Generation	fineValidation	{"driver_id":1,"spot_id":0,"amount":"50"}	{"error_count":1,"has_spot_error":1}	
+WB-FINE-003	WhiteBox	Automated Fine Generation	fineValidation	{"driver_id":1,"spot_id":1,"amount":""}	{"error_count":1,"has_amount_error":1}	
+WB-FINE-004	WhiteBox	Automated Fine Generation	fineValidation	{"driver_id":1,"spot_id":1,"amount":"0.5"}	{"error_count":1,"has_amount_error":1}	Below minimum
+WB-FINE-005	WhiteBox	Automated Fine Generation	sanction	{"pending_fines":2}	{"suspend":0}	
+WB-FINE-006	WhiteBox	Automated Fine Generation	sanction	{"pending_fines":3}	{"suspend":1}	Threshold branch
+WB-QR-001	WhiteBox	QR Check-In State Machine	qrToken	{"posted":"","stored":"abc"}	{"valid":0}	Empty posted token
+WB-QR-002	WhiteBox	QR Check-In State Machine	qrToken	{"posted":"wrong","stored":"secret"}	{"valid":0}	Mismatch
+WB-QR-003	WhiteBox	QR Check-In State Machine	qrToken	{"posted":"secret","stored":"secret"}	{"valid":1}	Match
+BB-SMOKE-001	BlackBox	Booking Flow	blackbox_placeholder	{}	{"status":"documented"}	Black-box traceability placeholder

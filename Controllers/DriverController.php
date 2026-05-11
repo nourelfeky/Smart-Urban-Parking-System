@@ -287,14 +287,8 @@ class DriverController extends BaseController
         $loy = $loyaltyStmt->fetch();
         $loyalty_discount = 0;
         if ($loy) {
-            $b = $loy['booking_last_30_days'];
-            if ($b >= 20) {
-                $loyalty_discount = 15;
-            } elseif ($b >= 10) {
-                $loyalty_discount = 10;
-            } elseif ($b >= 5) {
-                $loyalty_discount = 5;
-            }
+            $b = (int)$loy['booking_last_30_days'];
+            $loyalty_discount = LoyaltyProgram::bookingDiscountPercent($b);
         }
 
         $error = '';
@@ -698,8 +692,7 @@ class DriverController extends BaseController
         $cntStmt->execute([$uid]);
         $count = (int)$cntStmt->fetchColumn();
 
-        // Tier mapping requested: bronze < 5, silver >= 5, gold >= 20.
-        $tier = $count >= 20 ? 'gold' : ($count >= 5 ? 'silver' : 'bronze');
+        $tier = LoyaltyProgram::tierFromRollingBookingCount($count);
 
         $pdo->prepare('UPDATE loyalty_accounts SET booking_last_30_days=?, current_tier=? WHERE driver_id=?')
             ->execute([$count, $tier, $uid]);
