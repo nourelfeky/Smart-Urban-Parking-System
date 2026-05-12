@@ -10,6 +10,8 @@ require_once __DIR__ . '/../Models/PaymentModel.php';
 
 class AdminController extends BaseController
 {
+    private const FINE_AMOUNT_MIN = 1.0;
+    private const FINE_AMOUNT_MAX = 10000.0;
     private const VAT_PERCENT_MIN = 0.0;
     private const VAT_PERCENT_MAX = 100.0;
 
@@ -81,14 +83,23 @@ class AdminController extends BaseController
                 $amountRaw = trim((string)($_POST['amount'] ?? '50'));
                 $amount = (float)$amountRaw;
 
-                $errs = FineIssueValidator::validateIssuePayload($driver_id, $spot_id, $amountRaw, 'Fine amount');
+                $errs = [];
+                if (!$driver_id) {
+                    $errs[] = 'Driver is required.';
+                }
+                if (!$spot_id) {
+                    $errs[] = 'Spot is required.';
+                }
+                if ($amountRaw === '' || !is_numeric($amountRaw) || $amount < self::FINE_AMOUNT_MIN || $amount > self::FINE_AMOUNT_MAX) {
+                    $errs[] = 'Fine amount must be between ' . self::FINE_AMOUNT_MIN . ' and ' . self::FINE_AMOUNT_MAX . '.';
+                }
 
                 if ($errs === []) {
                     $pdo->prepare('INSERT INTO fines (driver_id, spot_id, type, penalty_amount) VALUES (?,?,?,?)')->execute([$driver_id, $spot_id, $type, $amount]);
                     $unpaid = $pdo->prepare("SELECT COUNT(*) FROM fines WHERE driver_id=? AND status='pending'");
                     $unpaid->execute([$driver_id]);
                     $cnt = $unpaid->fetchColumn();
-                    if (DriverSanctionPolicy::shouldSuspendForUnpaidFines((int)$cnt)) {
+                    if ($cnt >= 3) {
                         $pdo->prepare('UPDATE drivers SET can_book=0, unpaid_fines=? WHERE driver_id=?')->execute([$cnt, $driver_id]);
                         $bl = $pdo->prepare('SELECT COUNT(*) FROM blacklist WHERE driver_id=?');
                         $bl->execute([$driver_id]);

@@ -7,7 +7,7 @@ class PricingModel
      */
     public function calculatePeakPrice(float $basePrice, string $startTime): array
     {
-        $multiplier = PeakPricingConfig::effectiveMultiplierFromGlobals();
+        $multiplier = defined('PEAK_MULTIPLIER') ? (float)PEAK_MULTIPLIER : 1.25;
         $isPeakHour = $this->isWithinPeakHours($startTime);
         $isSpecialEvent = $this->isWithinSpecialEvent($startTime);
         $isPeak = $isPeakHour || $isSpecialEvent;
