@@ -1,9 +1,27 @@
 <?php require __DIR__ . '/../layout/header.php'; ?>
 
-<div class="flex items-center justify-between mb-3">
-    <h1 class="page-title" style="margin-bottom:0">Welcome back, <?= htmlspecialchars($u['name']) ?></h1>
-    <a href="<?= htmlspecialchars(route_url('/driver/search')) ?>" class="btn btn-primary">Find Parking</a>
-</div>
+<section class="page-hero">
+    <div class="page-hero-content">
+        <p class="hero-eyebrow">Driver Dashboard</p>
+        <h1>Welcome back, <?= htmlspecialchars($u['name']) ?></h1>
+        <p class="hero-sub">Your parking hub — track bookings, manage fines, and find your next spot instantly.</p>
+        <a href="<?= htmlspecialchars(route_url('/driver/search')) ?>" class="btn btn-primary btn-lg">Find Parking Now</a>
+    </div>
+    <div class="page-hero-visual">
+        <div class="hero-stat-pill">
+            <div class="num" data-count="<?= (int)$active_count ?>">0</div>
+            <div class="lbl">Active</div>
+        </div>
+        <div class="hero-stat-pill">
+            <div class="num" data-count="<?= (int)$fine_count ?>">0</div>
+            <div class="lbl">Fines</div>
+        </div>
+        <div class="hero-stat-pill">
+            <div class="num" data-count="<?= (float)($dinfo['wallet_balance'] ?? 0) ?>" data-count-decimal>0</div>
+            <div class="lbl">EGP Wallet</div>
+        </div>
+    </div>
+</section>
 
 <?php if ($dinfo && !$dinfo['can_book']): ?>
 <div class="alert alert-error">Your account is suspended from making bookings due to unpaid fines.</div>
@@ -16,11 +34,12 @@
     </div>
     <div class="stat-card">
         <div class="label">Pending Fines</div>
-        <div class="value" style="color:<?= $fine_count > 0 ? 'var(--red)' : 'var(--green)' ?>"><?= $fine_count ?></div>
+        <div class="value <?= $fine_count > 0 ? 'stat-value--danger' : 'stat-value--success' ?>"><?= $fine_count ?></div>
     </div>
     <div class="stat-card">
         <div class="label">Wallet Balance</div>
-        <div class="value" style="color:var(--green)"><?= number_format($dinfo['wallet_balance'] ?? 0, 2) ?> EGP</div>
+        <div class="value stat-value--success"><?= number_format($dinfo['wallet_balance'] ?? 0, 2) ?></div>
+        <div class="sub">EGP available</div>
     </div>
     <div class="stat-card">
         <div class="label">Notifications</div>
@@ -77,31 +96,31 @@
     <?php endif; ?>
 </div>
 
-<div class="card mt-3">
+<div class="card">
     <div class="card-title">Upcoming Commuter Reservations</div>
     <?php if (empty($subscriptions)): ?>
         <p class="text-muted">No subscription plan found. You can create one from the booking page by selecting "Commuter subscription".</p>
     <?php else: ?>
-        <div class="table-wrap">
-            <table>
-                <thead>
-                    <tr><th>ID</th><th>Spot</th><th>Days</th><th>Time Range</th><th>Weeks</th><th>Discount</th><th>Status</th></tr>
-                </thead>
-                <tbody>
-                    <?php foreach ($subscriptions as $sub): ?>
-                    <tr>
-                        <td>#<?= (int)$sub['subscription_id'] ?></td>
-                        <td><?= htmlspecialchars($sub['address']) ?></td>
-                        <td><?= htmlspecialchars($sub['days_of_week']) ?></td>
-                        <td><?= date('H:i', strtotime($sub['start_time_of_day'])) ?> - <?= date('H:i', strtotime($sub['end_time_of_day'])) ?></td>
-                        <td><?= (int)$sub['weeks'] ?></td>
-                        <td><?= number_format((float)$sub['discount_percent'], 2) ?>%</td>
-                        <td><?= htmlspecialchars($sub['status']) ?></td>
-                    </tr>
-                    <?php endforeach; ?>
-                </tbody>
-            </table>
-        </div>
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr><th>ID</th><th>Spot</th><th>Days</th><th>Time Range</th><th>Weeks</th><th>Discount</th><th>Status</th></tr>
+            </thead>
+            <tbody>
+                <?php foreach ($subscriptions as $sub): ?>
+                <tr>
+                    <td>#<?= (int)$sub['subscription_id'] ?></td>
+                    <td><?= htmlspecialchars($sub['address']) ?></td>
+                    <td><?= htmlspecialchars($sub['days_of_week']) ?></td>
+                    <td><?= date('H:i', strtotime($sub['start_time_of_day'])) ?> - <?= date('H:i', strtotime($sub['end_time_of_day'])) ?></td>
+                    <td><?= (int)$sub['weeks'] ?></td>
+                    <td><?= number_format((float)$sub['discount_percent'], 2) ?>%</td>
+                    <td><?= htmlspecialchars($sub['status']) ?></td>
+                </tr>
+                <?php endforeach; ?>
+            </tbody>
+        </table>
+    </div>
     <?php endif; ?>
 </div>
 

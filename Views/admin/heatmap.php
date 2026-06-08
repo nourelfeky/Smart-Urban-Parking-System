@@ -1,16 +1,12 @@
-<?php require __DIR__ . '/../layout/header.php'; 
+<?php require __DIR__ . '/../layout/header.php';
 
-function heat_color(float $val, float $max): string {
-    if ($max <= 0) return '#dbeafe';
+function heat_class(float $val, float $max): string {
+    if ($max <= 0) return 'heat-cell--low';
     $pct = $val / $max;
-    if ($pct > 0.75) return '#1d4ed8';
-    if ($pct > 0.50) return '#3b82f6';
-    if ($pct > 0.25) return '#93c5fd';
-    return '#dbeafe';
-}
-
-function heat_text(float $val, float $max): string {
-    return ($val / ($max ?: 1) > 0.5) ? '#ffffff' : '#1e3a8a';
+    if ($pct > 0.75) return 'heat-cell--top';
+    if ($pct > 0.50) return 'heat-cell--high';
+    if ($pct > 0.25) return 'heat-cell--medium';
+    return 'heat-cell--low';
 }
 ?>
 
@@ -18,11 +14,11 @@ function heat_text(float $val, float $max): string {
 
 <div class="card mb-3">
     <div class="card-title">Heat Legend</div>
-    <div class="flex gap-2 items-center" style="flex-wrap:wrap">
-        <div style="width:28px;height:20px;background:#dbeafe;border-radius:4px"></div><span class="text-muted">Low</span>
-        <div style="width:28px;height:20px;background:#93c5fd;border-radius:4px"></div><span class="text-muted">Medium</span>
-        <div style="width:28px;height:20px;background:#3b82f6;border-radius:4px"></div><span class="text-muted">High</span>
-        <div style="width:28px;height:20px;background:#1d4ed8;border-radius:4px"></div><span class="text-muted">Top</span>
+    <div class="heat-legend">
+        <div class="heat-swatch heat-cell--low"></div><span class="text-muted">Low</span>
+        <div class="heat-swatch heat-cell--medium"></div><span class="text-muted">Medium</span>
+        <div class="heat-swatch heat-cell--high"></div><span class="text-muted">High</span>
+        <div class="heat-swatch heat-cell--top"></div><span class="text-muted">Top</span>
     </div>
 </div>
 
@@ -31,12 +27,11 @@ function heat_text(float $val, float $max): string {
     <?php if (empty($data)): ?>
         <p class="text-muted">No revenue data yet.</p>
     <?php else: ?>
-    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px">
+    <div class="heat-grid">
         <?php foreach ($data as $row):
-            $bg   = heat_color((float)$row['revenue'], $max_rev);
-            $col  = heat_text((float)$row['revenue'], $max_rev);
+            $cls = heat_class((float)$row['revenue'], $max_rev);
         ?>
-        <div style="background:<?= $bg ?>;color:<?= $col ?>;border-radius:8px;padding:14px;min-height:80px">
+        <div class="heat-cell <?= $cls ?>">
             <div style="font-size:12px;opacity:.8;margin-bottom:4px"><?= htmlspecialchars($row['zone_name'] ?? 'No Zone') ?></div>
             <div style="font-size:13px;font-weight:600;margin-bottom:6px"><?= htmlspecialchars(substr($row['address'],0,35)) ?><?= strlen($row['address'])>35?'…':'' ?></div>
             <div style="font-size:18px;font-weight:700"><?= number_format($row['revenue'],0) ?> EGP</div>
@@ -62,9 +57,10 @@ function heat_text(float $val, float $max): string {
                 <td>
                     <?php
                     $pct = $max_rev > 0 ? round($row['revenue'] / $max_rev * 100) : 0;
+                    $barCls = heat_class((float)$row['revenue'], $max_rev);
                     ?>
                     <div style="background:var(--gray-100);border-radius:4px;height:8px;width:120px">
-                        <div style="background:<?= heat_color((float)$row['revenue'],$max_rev) ?>;height:8px;border-radius:4px;width:<?= $pct ?>%"></div>
+                        <div class="heat-cell <?= $barCls ?>" style="height:8px;border-radius:4px;width:<?= $pct ?>%;min-height:0;padding:0;border:none"></div>
                     </div>
                 </td>
             </tr>

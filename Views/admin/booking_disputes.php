@@ -46,7 +46,7 @@
             <label>Note (optional)</label>
             <textarea name="admin_note" class="form-control" rows="2"></textarea>
         </div>
-        <button type="submit" class="btn btn-outline" style="color:var(--red);border-color:var(--red)">Reject</button>
+        <button type="submit" class="btn btn-outline-danger">Reject</button>
     </form>
 </div>
 <?php endforeach; ?>

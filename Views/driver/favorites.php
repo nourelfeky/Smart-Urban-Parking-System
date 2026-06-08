@@ -91,7 +91,7 @@
         <form method="post" style="display:inline">
             <input type="hidden" name="action" value="remove_fav">
             <input type="hidden" name="spot_id" value="<?= $f['spot_id'] ?>">
-            <button class="btn btn-sm" style="color:var(--red)">Remove</button>
+            <button class="btn btn-sm btn-outline-danger">Remove</button>
         </form>
     </div>
 </div>

@@ -2,16 +2,33 @@
 $pageTitle = 'Register';
 include __DIR__ . '/../layout/header.php';
 ?>
-<div class="login-wrap">
-    <div class="login-box">
-        <div class="login-logo">City<span>Slot</span></div>
-        <p class="login-sub">Create your account</p>
-        <?php if ($alreadyLoggedIn): ?>
-            <div class="alert alert-info">You are already logged in. Please logout from the navigation bar first to continue.</div>
-        <?php endif; ?>
-        <?php if (!$alreadyLoggedIn): ?>
-            <?php if (!empty($error)): ?><div class="alert alert-error"><?= htmlspecialchars($error) ?></div><?php endif; ?>
-        <form method="post" action="<?= htmlspecialchars(route_url('/register')) ?>">
+<button type="button" class="auth-theme-toggle topbar-theme-btn" id="topbar-theme-toggle" aria-label="Toggle theme">
+    <span class="icon-sun" aria-hidden="true"></span>
+    <span class="icon-moon" aria-hidden="true"></span>
+</button>
+<div class="auth-layout">
+    <div class="auth-brand-panel">
+        <div class="auth-brand-content">
+            <div class="auth-brand-logo">City<span>Slot</span></div>
+            <p class="auth-brand-tagline">Join thousands of drivers and space owners transforming urban parking.</p>
+            <ul class="auth-features">
+                <li><span class="auth-feature-icon">🚗</span> Book parking as a driver</li>
+                <li><span class="auth-feature-icon">🏠</span> List your space as an owner</li>
+                <li><span class="auth-feature-icon">👮</span> Enforce rules as an officer</li>
+                <li><span class="auth-feature-icon">✨</span> Free to get started</li>
+            </ul>
+        </div>
+    </div>
+    <div class="auth-form-panel">
+        <div class="auth-form-box">
+            <h2>Create account</h2>
+            <p class="auth-form-sub">Set up your CitySlot profile in under a minute</p>
+            <?php if ($alreadyLoggedIn): ?>
+                <div class="alert alert-info">You are already logged in. Please sign out first to register a new account.</div>
+            <?php endif; ?>
+            <?php if (!$alreadyLoggedIn): ?>
+                <?php if (!empty($error)): ?><div class="alert alert-error"><?= htmlspecialchars($error) ?></div><?php endif; ?>
+            <form method="post" action="<?= htmlspecialchars(route_url('/register')) ?>">
                 <div class="form-group">
                     <label>Full Name</label>
                     <input type="text" name="name" class="form-control" required value="<?= htmlspecialchars($postedName ?? '') ?>">
@@ -32,12 +49,13 @@ include __DIR__ . '/../layout/header.php';
                         <option value="officer" <?= ($postedRole ?? '') === 'officer' ? 'selected' : '' ?>>Officer</option>
                     </select>
                 </div>
-                <button type="submit" class="btn btn-primary btn-block mt-3">Create Account</button>
+                <button type="submit" class="btn btn-primary btn-block btn-lg mt-3">Create Account</button>
             </form>
-            <p class="text-muted mt-3" style="text-align:center">
+            <p class="text-muted mt-3 text-center">
                 Already have an account? <a href="<?= htmlspecialchars(route_url('/login')) ?>">Sign in</a>
             </p>
-        <?php endif; ?>
+            <?php endif; ?>
+        </div>
     </div>
 </div>
 <?php include __DIR__ . '/../layout/footer.php'; ?>

@@ -1,6 +1,21 @@
+<?php
+require_once __DIR__ . '/../../Core/Auth.php';
+$u = current_user();
+$role = $u['role'] ?? '';
+?>
+<?php if ($role): ?>
+        </main>
+        <footer class="site-footer">
+            <div class="footer-inner">
+                <span class="footer-brand">City<span>Slot</span></span>
+                <span class="footer-copy">&copy; <?= date('Y') ?> Smart Urban Parking</span>
+            </div>
+        </footer>
+    </div>
 </div>
-<footer style="text-align:center;padding:24px;font-size:13px;color:#9ca3af;border-top:1px solid #e5e7eb;margin-top:40px;">
-    CitySlot &copy; <?= date('Y') ?> — Smart Urban Parking
-</footer>
+<?php else: ?>
+</main>
+<?php endif; ?>
+<script src="<?= htmlspecialchars(asset_url('/js/ui.js')) ?>" defer></script>
 </body>
 </html>

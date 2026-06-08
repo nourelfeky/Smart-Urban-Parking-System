@@ -106,11 +106,11 @@
   const available = Number(<?= json_encode((int)($metrics['available_minutes'] ?? 0)) ?>);
   const free = Math.max(0, available - booked);
 
-  const gridColor = 'rgba(148,163,184,0.25)';
-  const textColor = '#334155';
+  const gridColor = 'rgba(167,158,156,0.32)';
+  const textColor = '#10232A';
 
   Chart.defaults.color = textColor;
-  Chart.defaults.font.family = 'system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif';
+  Chart.defaults.font.family = "'Plus Jakarta Sans', system-ui, sans-serif";
 
   const dailyCtx = document.getElementById('dailySessionsChart');
   if (dailyCtx) {
@@ -122,8 +122,8 @@
           {
             label: 'Sessions',
             data: dailySessions,
-            borderColor: '#2563eb',
-            backgroundColor: 'rgba(37,99,235,0.12)',
+            borderColor: '#B58863',
+            backgroundColor: 'rgba(181,136,99,0.16)',
             tension: 0.35,
             fill: true,
             pointRadius: 2
@@ -131,8 +131,8 @@
           {
             label: 'Gross (EGP)',
             data: dailyGross,
-            borderColor: '#16a34a',
-            backgroundColor: 'rgba(22,163,74,0.10)',
+            borderColor: '#3D4D55',
+            backgroundColor: 'rgba(61,77,85,0.14)',
             tension: 0.35,
             fill: false,
             pointRadius: 2,
@@ -162,8 +162,8 @@
           {
             label: 'Sessions',
             data: hourlySessions,
-            backgroundColor: 'rgba(99,102,241,0.35)',
-            borderColor: 'rgba(99,102,241,0.85)',
+            backgroundColor: 'rgba(181,136,99,0.38)',
+            borderColor: 'rgba(181,136,99,0.88)',
             borderWidth: 1
           }
         ]
@@ -187,8 +187,8 @@
         datasets: [
           {
             data: [booked, free],
-            backgroundColor: ['rgba(245,158,11,0.70)', 'rgba(148,163,184,0.40)'],
-            borderColor: ['rgba(245,158,11,1)', 'rgba(148,163,184,0.7)'],
+            backgroundColor: ['rgba(16,35,42,0.72)', 'rgba(211,195,185,0.55)'],
+            borderColor: ['rgba(16,35,42,1)', 'rgba(167,158,156,0.85)'],
             borderWidth: 1
           }
         ]

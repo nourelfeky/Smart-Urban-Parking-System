@@ -29,7 +29,7 @@
 
         <div class="form-group">
             <label>Pick location on map</label>
-            <div id="ownerSpotMap" style="height: 340px; border-radius: 8px; border: 1px solid #e5e7eb;"></div>
+            <div id="ownerSpotMap" style="height:340px"></div>
             <div class="flex gap-2 mt-2" style="flex-wrap:wrap">
                 <button type="button" class="btn btn-outline btn-sm" id="btnUseMyLocation">Use my current location</button>
                 <button type="button" class="btn btn-outline btn-sm" id="btnFindByAddress">Find from address</button>

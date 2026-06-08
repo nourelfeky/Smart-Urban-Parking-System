@@ -1,13 +1,13 @@
 <?php require __DIR__ . '/../layout/header.php'; ?>
 
-<div class="flex items-center justify-between mb-3">
-    <h1 class="page-title" style="margin-bottom:0">Booking #<?= $id ?></h1>
-    <span class="badge <?= $bc ?>" style="font-size:14px;padding:6px 14px"><?= $r['status'] ?></span>
+<div class="page-header">
+    <h1 class="page-title">Booking #<?= $id ?></h1>
+    <span class="badge badge-lg <?= $bc ?>"><?= $r['status'] ?></span>
 </div>
 
 <?php if (($r['penalty_amount'] ?? 0) > 0): ?>
-    <div class="card" style="border-left:4px solid var(--red)">
-        <div style="font-weight:700;color:var(--red)">Overstay penalty applied</div>
+    <div class="card card-danger">
+        <div class="text-danger font-bold">Overstay penalty applied</div>
         <div class="text-muted mt-1">
             You checked out after your reserved end time, so an overstay penalty was added to your total.
         </div>
@@ -38,7 +38,7 @@
         <?php endif; ?>
         <tr><td class="text-muted">Base cost</td><td style="padding-left:24px"><?= number_format($r['base_cost'], 2) ?> EGP</td></tr>
         <?php if ($r['discount_amount'] > 0): ?>
-        <tr><td class="text-muted">Discount</td><td style="padding-left:24px;color:var(--green)">- <?= number_format($r['discount_amount'], 2) ?> EGP</td></tr>
+        <tr><td class="text-muted">Discount</td><td class="text-success" style="padding-left:24px">- <?= number_format($r['discount_amount'], 2) ?> EGP</td></tr>
         <?php endif; ?>
         <tr><td class="text-muted">VAT</td><td style="padding-left:24px"><?= number_format($r['tax_amount'], 2) ?> EGP</td></tr>
         <tr style="font-weight:700"><td>Total</td><td style="padding-left:24px"><?= number_format($r['final_cost'], 2) ?> EGP</td></tr>
@@ -58,7 +58,7 @@
         <tr><td class="text-muted">Reserved Time</td><td style="padding-left:24px"><?= date('d M Y, H:i', strtotime($r['end_time'])) ?></td></tr>
         <tr><td class="text-muted">Actual Time</td><td style="padding-left:24px"><?= $r['check_out_time'] ? date('d M Y, H:i', strtotime($r['check_out_time'])) : '-' ?></td></tr>
         <tr><td class="text-muted">Overstay Duration</td><td style="padding-left:24px"><?= (int)$r['overstay_minutes'] ?> minutes</td></tr>
-        <tr><td class="text-muted">Overstay penalty</td><td style="padding-left:24px;color:var(--red)"><?= number_format($r['penalty_amount'], 2) ?> EGP</td></tr>
+        <tr><td class="text-muted">Overstay penalty</td><td class="text-danger" style="padding-left:24px"><?= number_format($r['penalty_amount'], 2) ?> EGP</td></tr>
         <tr style="font-weight:700"><td>Total cost (with penalty)</td><td style="padding-left:24px"><?= number_format($r['final_cost'], 2) ?> EGP</td></tr>
         <?php endif; ?>
     </table>
@@ -103,9 +103,9 @@
     <div class="card-title">QR Check-in / Check-out</div>
     <div class="qr-box">
         <p class="text-muted">Scan this QR code or show the token at the scanner</p>
-        <div id="qr-code-container" style="display:flex;flex-direction:column;align-items:center;gap:12px">
-            <div id="qrcode" style="padding:12px;background:#fff;border:1px solid #ddd;border-radius:4px"></div>
-            <div class="qr-token" style="font-size:12px;color:#999"><?= htmlspecialchars($r['qr_code_token']) ?></div>
+        <div id="qr-code-container" class="flex items-center gap-3" style="flex-direction:column">
+            <div id="qrcode" class="qr-frame"></div>
+            <div class="qr-token"><?= htmlspecialchars($r['qr_code_token']) ?></div>
         </div>
     </div>
     <div class="flex gap-2 mt-3" style="flex-wrap:wrap">
@@ -115,9 +115,9 @@
             <input type="hidden" name="qr_token" value="<?= htmlspecialchars((string)$r['qr_code_token']) ?>">
             <button class="btn btn-success">Check In</button>
         </form>
-        <form method="post" style="display:inline" onsubmit="return confirm('Cancel this booking?')">
+        <form method="post" class="inline-form" onsubmit="return confirm('Cancel this booking?')">
             <input type="hidden" name="action" value="cancel">
-            <button class="btn btn-outline" style="color:var(--red);border-color:var(--red)">Cancel Booking</button>
+            <button class="btn btn-outline-danger">Cancel Booking</button>
         </form>
         <?php elseif ($r['status'] === 'active'): ?>
         <form method="post" style="display:inline">
@@ -138,12 +138,12 @@
                         <option value="120">+2 hours</option>
                     </select>
                 </div>
-                <div id="extend_preview" style="display:none;padding:12px;background:#f5f5f5;border-radius:4px;margin-bottom:12px">
-                    <p class="text-muted" style="margin:0;font-size:13px">Extension cost (estimated)</p>
-                    <p style="margin:6px 0;font-weight:700">Base: <span id="preview_base">0</span> EGP</p>
-                    <p style="margin:6px 0;font-weight:700">Tax: <span id="preview_tax">0</span> EGP</p>
-                    <p style="margin:6px 0;color:var(--red);font-weight:700">Total: <span id="preview_total">0</span> EGP</p>
-                    <div id="extend_conflict_msg" style="display:none;margin-top:12px;padding:8px;background:#ffe6e6;border:1px solid #ff9999;border-radius:3px;color:var(--red);font-size:13px">
+                <div id="extend_preview" class="preview-panel">
+                    <p class="text-muted mb-0">Extension cost (estimated)</p>
+                    <p class="font-bold mt-2">Base: <span id="preview_base">0</span> EGP</p>
+                    <p class="font-bold mt-2">Tax: <span id="preview_tax">0</span> EGP</p>
+                    <p class="text-primary font-bold mt-2">Total: <span id="preview_total">0</span> EGP</p>
+                    <div id="extend_conflict_msg" class="conflict-msg">
                         Cannot extend — another booking conflicts with this time slot.
                     </div>
                 </div>
@@ -195,8 +195,8 @@ document.addEventListener('DOMContentLoaded', function() {
             text: token,
             width: 256,
             height: 256,
-            colorDark: '#000000',
-            colorLight: '#ffffff',
+            colorDark: '#10232A',
+            colorLight: '#D3C3B9',
             correctLevel: QRCode.CorrectLevel.H
         });
     }
@@ -226,7 +226,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 document.getElementById('preview_tax').textContent = extTax.toFixed(2);
                 document.getElementById('preview_total').textContent = extTotal.toFixed(2);
 
-                previewDiv.style.display = 'block';
+                previewDiv.classList.add('is-visible');
                 
                 // Check for conflicts on the server
                 const currentEnd = <?= json_encode($r['end_time']) ?>;
@@ -250,22 +250,22 @@ document.addEventListener('DOMContentLoaded', function() {
                 .then(response => response.json())
                 .then(data => {
                     if (data.hasConflict) {
-                        conflictMsg.style.display = 'block';
+                        conflictMsg.classList.add('is-visible');
                         confirmBtn.style.display = 'none';
                         confirmInput.value = '0';
                     } else {
-                        conflictMsg.style.display = 'none';
-                        confirmBtn.style.display = 'inline-block';
+                        conflictMsg.classList.remove('is-visible');
+                        confirmBtn.style.display = 'inline-flex';
                         confirmInput.value = '1';
                     }
                 })
                 .catch(err => {
                     console.error('Error checking conflicts:', err);
-                    confirmBtn.style.display = 'inline-block';
+                    confirmBtn.style.display = 'inline-flex';
                     confirmInput.value = '1';
                 });
             } else {
-                previewDiv.style.display = 'none';
+                previewDiv.classList.remove('is-visible');
                 confirmBtn.style.display = 'none';
                 confirmInput.value = '0';
             }

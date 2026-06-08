@@ -1,6 +1,27 @@
 <?php require __DIR__ . '/../layout/header.php'; ?>
 
-<h1 class="page-title">Owner Dashboard</h1>
+<section class="page-hero">
+    <div class="page-hero-content">
+        <p class="hero-eyebrow">Space Owner</p>
+        <h1>Your Parking Business</h1>
+        <p class="hero-sub">Track earnings, manage spots, and grow your revenue with real-time booking insights.</p>
+        <a href="<?= htmlspecialchars(route_url('/owner/spots')) ?>" class="btn btn-primary btn-lg">Manage Spots</a>
+    </div>
+    <div class="page-hero-visual">
+        <div class="hero-stat-pill">
+            <div class="num" data-count="<?= (int)$spot_count ?>">0</div>
+            <div class="lbl">Spots</div>
+        </div>
+        <div class="hero-stat-pill">
+            <div class="num" data-count="<?= (float)$total_rev ?>">0</div>
+            <div class="lbl">EGP Revenue</div>
+        </div>
+        <div class="hero-stat-pill">
+            <div class="num" data-count="<?= (float)($odata['earnings_balance'] ?? 0) ?>">0</div>
+            <div class="lbl">Balance</div>
+        </div>
+    </div>
+</section>
 
 <?php if ($odata && $odata['verification_status'] !== 'approved'): ?>
 <div class="alert alert-info">
@@ -21,7 +42,7 @@
     </div>
     <div class="stat-card">
         <div class="label">Balance</div>
-        <div class="value"><?= number_format($odata['earnings_balance'] ?? 0, 0) ?></div>
+        <div class="value stat-value--success"><?= number_format($odata['earnings_balance'] ?? 0, 0) ?></div>
         <div class="sub">EGP available</div>
     </div>
     <div class="stat-card">
@@ -37,17 +58,17 @@
 </div>
 
 <div class="card">
-    <div class="flex items-center justify-between mb-3">
-        <div class="card-title" style="margin-bottom:0">Recent Bookings on My Spots</div>
+    <div class="page-header mb-0">
+        <div class="card-title mb-0">Recent Bookings on My Spots</div>
         <div class="flex gap-2">
             <a href="<?= htmlspecialchars(route_url('/owner/reports')) ?>" class="btn btn-outline btn-sm">Monthly Reports</a>
             <a href="<?= htmlspecialchars(route_url('/owner/spots')) ?>" class="btn btn-primary btn-sm">Manage Spots</a>
         </div>
     </div>
     <?php if (empty($recent)): ?>
-        <p class="text-muted">No bookings yet.</p>
+        <p class="text-muted mt-3">No bookings yet.</p>
     <?php else: ?>
-    <div class="table-wrap">
+    <div class="table-wrap mt-3">
         <table>
             <thead><tr><th>Driver</th><th>Spot</th><th>Start</th><th>End</th><th>Amount</th><th>Status</th></tr></thead>
             <tbody>

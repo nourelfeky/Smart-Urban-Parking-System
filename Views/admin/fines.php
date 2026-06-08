@@ -58,7 +58,7 @@
                 <td><?= htmlspecialchars($f['driver_name']) ?></td>
                 <td><?= htmlspecialchars($f['address']) ?></td>
                 <td><?= $f['type'] ?></td>
-                <td style="color:var(--red)"><?= number_format($f['penalty_amount'],2) ?> EGP</td>
+                <td class="text-danger font-bold"><?= number_format($f['penalty_amount'],2) ?> EGP</td>
                 <td><span class="badge <?= $fb[$f['status']] ?? 'badge-gray' ?>"><?= $f['status'] ?></span></td>
                 <td><?= $f['appeal_id'] ? '<span class="badge badge-blue">' . $f['appeal_status'] . '</span>' : '—' ?></td>
                 <td>

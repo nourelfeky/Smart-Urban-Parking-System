@@ -1,6 +1,23 @@
 <?php require __DIR__ . '/../layout/header.php'; ?>
 
-<h1 class="page-title">Officer Dashboard</h1>
+<section class="page-hero">
+    <div class="page-hero-content">
+        <p class="hero-eyebrow">Parking Officer</p>
+        <h1>Enforcement Center</h1>
+        <p class="hero-sub">Review violations, flag unauthorized parking, and keep city spots compliant.</p>
+        <a href="<?= htmlspecialchars(route_url('/officer/violation')) ?>" class="btn btn-danger btn-lg">Report Violation</a>
+    </div>
+    <div class="page-hero-visual">
+        <div class="hero-stat-pill">
+            <div class="num" data-count="<?= (int)$det_count ?>">0</div>
+            <div class="lbl">Detected</div>
+        </div>
+        <div class="hero-stat-pill">
+            <div class="num" data-count="<?= (int)$flagged ?>">0</div>
+            <div class="lbl">Flagged</div>
+        </div>
+    </div>
+</section>
 
 <div class="stats-grid">
     <div class="stat-card">
@@ -10,17 +27,8 @@
     </div>
     <div class="stat-card">
         <div class="label">Flagged Spots</div>
-        <div class="value" style="color:var(--red)"><?= $flagged ?></div>
+        <div class="value stat-value--danger"><?= $flagged ?></div>
         <div class="sub">pending fines</div>
-    </div>
-</div>
-
-<div class="card mb-3">
-    <div class="flex items-center justify-between mb-3">
-        <div class="card-title" style="margin-bottom:0">Quick Actions</div>
-    </div>
-    <div class="flex gap-3" style="flex-wrap:wrap">
-        <a href="<?= htmlspecialchars(route_url('/officer/violation')) ?>" class="btn btn-danger">Report Violation</a>
     </div>
 </div>
 
@@ -48,7 +56,7 @@
                     <td><?= htmlspecialchars($v['driver_name']) ?></td>
                     <td><?= htmlspecialchars($v['address']) ?></td>
                     <td><?= htmlspecialchars($v['type']) ?></td>
-                    <td><?= number_format($v['penalty_amount'], 2) ?> EGP</td>
+                    <td class="text-danger font-bold"><?= number_format($v['penalty_amount'], 2) ?> EGP</td>
                     <td>
                         <?php
                         $badges = ['pending'=>'badge-amber','paid'=>'badge-green','cancelled'=>'badge-gray','appealed'=>'badge-blue'];
