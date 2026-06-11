@@ -224,44 +224,45 @@
     }
 
     /* ── Sidebar mobile ── */
+    /* ── Mobile nav toggle ── */
     function initSidebar() {
-        var sidebar = document.getElementById('sidebar');
-        var overlay = document.getElementById('sidebar-overlay');
-        var toggle = document.getElementById('sidebar-toggle');
-        if (!sidebar) return;
+        var links   = document.getElementById('topnav-links');
+        var overlay = document.getElementById('nav-overlay');
+        var toggle  = document.getElementById('nav-toggle');
+        if (!links) return;
 
         function open() {
-            sidebar.classList.add('is-open');
+            links.classList.add('is-open');
             if (overlay) overlay.classList.add('is-visible');
             document.body.style.overflow = 'hidden';
         }
         function close() {
-            sidebar.classList.remove('is-open');
+            links.classList.remove('is-open');
             if (overlay) overlay.classList.remove('is-visible');
             document.body.style.overflow = '';
         }
 
         if (toggle) toggle.addEventListener('click', function () {
-            sidebar.classList.contains('is-open') ? close() : open();
+            links.classList.contains('is-open') ? close() : open();
         });
         if (overlay) overlay.addEventListener('click', close);
 
-        sidebar.querySelectorAll('.sidebar-link').forEach(function (link) {
+        links.querySelectorAll('.tnav-link').forEach(function (link) {
             link.addEventListener('click', function () {
-                if (window.innerWidth <= 1024) close();
+                if (window.innerWidth <= 900) close();
             });
         });
     }
 
-    /* ── Topbar scroll ── */
+    /* ── Topnav scroll shadow ── */
     function initTopbarScroll() {
-        var topbar = document.querySelector('.topbar');
-        if (!topbar) return;
-        var onScroll = function () {
-            topbar.classList.toggle('scrolled', window.scrollY > 8);
-        };
-        onScroll();
-        window.addEventListener('scroll', onScroll, { passive: true });
+        var nav = document.getElementById('topnav');
+        if (!nav) return;
+        window.addEventListener('scroll', function () {
+            nav.style.boxShadow = window.scrollY > 8
+                ? '0 4px 24px rgba(0,0,0,0.35)'
+                : '0 1px 0 rgba(181,136,99,0.08), 0 4px 24px rgba(0,0,0,0.25)';
+        }, { passive: true });
     }
 
     /* ── Page enter ── */
@@ -379,10 +380,134 @@
         });
     }
 
-    /* ── Alerts fade (legacy fallback) ── */
-    function initAlerts() {
-        /* Alerts are now converted to toasts — this is a no-op kept for compat */
+    /* ── Particle canvas in page band ── */
+    function initBandCanvas() {
+        var canvas = document.getElementById('band-canvas');
+        if (!canvas) return;
+        var ctx = canvas.getContext('2d');
+        var band = canvas.parentElement;
+        var W, H, particles, edges;
+        var PARTICLE_COUNT = 38;
+        var MAX_DIST = 120;
+        var COPPER = '181,136,99';
+        var SAND   = '211,195,185';
+
+        function resize() {
+            W = canvas.width  = band.offsetWidth;
+            H = canvas.height = band.offsetHeight;
+        }
+
+        function randBetween(a, b) { return a + Math.random() * (b - a); }
+
+        function buildParticles() {
+            particles = [];
+            for (var i = 0; i < PARTICLE_COUNT; i++) {
+                particles.push({
+                    x:  randBetween(0, W),
+                    y:  randBetween(0, H),
+                    vx: randBetween(-0.25, 0.25),
+                    vy: randBetween(-0.18, 0.18),
+                    r:  randBetween(1.2, 2.8),
+                    a:  randBetween(0.3, 0.85)
+                });
+            }
+        }
+
+        function draw() {
+            ctx.clearRect(0, 0, W, H);
+
+            /* Move */
+            particles.forEach(function (p) {
+                p.x += p.vx;
+                p.y += p.vy;
+                if (p.x < -10) p.x = W + 10;
+                if (p.x > W + 10) p.x = -10;
+                if (p.y < -10) p.y = H + 10;
+                if (p.y > H + 10) p.y = -10;
+            });
+
+            /* Edges */
+            for (var i = 0; i < particles.length; i++) {
+                for (var j = i + 1; j < particles.length; j++) {
+                    var dx = particles[i].x - particles[j].x;
+                    var dy = particles[i].y - particles[j].y;
+                    var dist = Math.sqrt(dx * dx + dy * dy);
+                    if (dist < MAX_DIST) {
+                        var alpha = (1 - dist / MAX_DIST) * 0.35;
+                        ctx.beginPath();
+                        ctx.strokeStyle = 'rgba(' + COPPER + ',' + alpha + ')';
+                        ctx.lineWidth = 0.8;
+                        ctx.moveTo(particles[i].x, particles[i].y);
+                        ctx.lineTo(particles[j].x, particles[j].y);
+                        ctx.stroke();
+                    }
+                }
+            }
+
+            /* Dots */
+            particles.forEach(function (p) {
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+                ctx.fillStyle = 'rgba(' + SAND + ',' + p.a + ')';
+                ctx.fill();
+            });
+
+            requestAnimationFrame(draw);
+        }
+
+        resize();
+        buildParticles();
+        draw();
+        window.addEventListener('resize', function () { resize(); buildParticles(); });
     }
+
+    /* ── Live clock in page band ── */
+    function initBandClock() {
+        var timeEl = document.getElementById('band-clock-time');
+        var dateEl = document.getElementById('band-clock-date');
+        var clockEl = document.getElementById('page-band-clock');
+        if (!timeEl || !dateEl) return;
+
+        var DAYS   = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+        var MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+        function pad(n) { return n < 10 ? '0' + n : '' + n; }
+
+        function tick() {
+            var now = new Date();
+            var h = now.getHours(), m = now.getMinutes(), s = now.getSeconds();
+            var ampm = h >= 12 ? 'PM' : 'AM';
+            h = h % 12 || 12;
+            timeEl.textContent = pad(h) + ':' + pad(m) + ':' + pad(s) + ' ' + ampm;
+            dateEl.textContent = DAYS[now.getDay()] + ', ' + MONTHS[now.getMonth()] + ' ' + now.getDate() + ' ' + now.getFullYear();
+        }
+
+        tick();
+        setInterval(tick, 1000);
+        if (clockEl) setTimeout(function () { clockEl.classList.add('is-ready'); }, 200);
+    }
+
+    /* ── FAB scroll-hide ── */
+    function initFab() {
+        var fab = document.getElementById('page-fab');
+        if (!fab) return;
+        var lastY = 0;
+        window.addEventListener('scroll', function () {
+            var y = window.scrollY;
+            if (y > lastY + 40 && y > 200) {
+                fab.style.transform = 'translateY(90px)';
+                fab.style.opacity = '0';
+            } else if (y < lastY - 10 || y < 120) {
+                fab.style.transform = '';
+                fab.style.opacity = '';
+            }
+            lastY = y;
+        }, { passive: true });
+        fab.style.transition = fab.style.transition + ', opacity 0.3s ease, transform 0.4s cubic-bezier(0.34,1.25,0.64,1)';
+    }
+
+    /* ── Alerts fade (legacy fallback) ── */
+    function initAlerts() { /* converted to toasts */ }
 
     function init() {
         document.documentElement.classList.add('js-ready');
@@ -401,6 +526,9 @@
         initTableRowAnimations();
         initEmptyStates();
         initSpotPulse();
+        initBandCanvas();
+        initBandClock();
+        initFab();
     }
 
     if (document.readyState === 'loading') {
